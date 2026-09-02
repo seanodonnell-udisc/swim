@@ -1,10 +1,8 @@
 package swim.core.session
 
-import swim.core.model.PrStatus
 import swim.core.model.WorkflowStateType
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 
 class ClassifiersTest {
     @Test
@@ -56,69 +54,4 @@ class ClassifiersTest {
     fun anUnknownNameWithNoTypeIsBacklog() {
         assertEquals(StateCategory.BACKLOG, stateCategory("Shipping"))
     }
-
-    @Test
-    fun prNumberComesFromTheUrl() {
-        assertEquals(42, prNumber("https://github.com/acme/app/pull/42"))
-        assertEquals(42, prNumber("https://github.com/acme/app/pull/42/files"))
-        assertNull(prNumber("https://github.com/acme/app/issues/42"))
-    }
-
-    @Test
-    fun aPullRequestWithNoStatusHasNoBadgesAndOnlyTheTitleAsTooltip() {
-        val badge = prBadge("https://github.com/acme/app/pull/7", null, "Fix the thing")
-
-        assertEquals(PrBadge(7, ReviewLevel.NONE, CheckLevel.NONE, "Fix the thing"), badge)
-    }
-
-    @Test
-    fun aPullRequestWithNoStatusAndNoTitleHasNoTooltip() {
-        assertNull(prBadge("https://github.com/acme/app/pull/7", null).tooltip)
-    }
-
-    @Test
-    fun everyReviewDecisionMapsToALevel() {
-        val cases = listOf(
-            "APPROVED" to ReviewLevel.APPROVED,
-            "CHANGES_REQUESTED" to ReviewLevel.CHANGES_REQUESTED,
-            "REVIEW_REQUIRED" to ReviewLevel.NONE,
-        )
-        for ((wire, expected) in cases) {
-            val badge = prBadge(PR_URL, PrStatus(reviewDecision = wire))
-            assertEquals(expected, badge.review, "review decision: $wire")
-        }
-    }
-
-    @Test
-    fun everyCheckStateMapsToALevel() {
-        val cases = listOf(
-            "SUCCESS" to CheckLevel.OK,
-            "FAILURE" to CheckLevel.FAILED,
-            "ERROR" to CheckLevel.FAILED,
-            "PENDING" to CheckLevel.PENDING,
-            "EXPECTED" to CheckLevel.PENDING,
-            "SOMETHING_NEW" to CheckLevel.NONE,
-        )
-        for ((wire, expected) in cases) {
-            val badge = prBadge(PR_URL, PrStatus(checkState = wire))
-            assertEquals(expected, badge.checks, "check state: $wire")
-        }
-    }
-
-    @Test
-    fun theTooltipJoinsTitleReviewAndCheckWording() {
-        val badge = prBadge(
-            PR_URL,
-            PrStatus(reviewDecision = "CHANGES_REQUESTED", checkState = "ERROR"),
-            "Fix the thing",
-        )
-        assertEquals("Fix the thing · Changes requested · Checks errored", badge.tooltip)
-    }
-
-    @Test
-    fun theTooltipSkipsThePartsThatAreMissing() {
-        assertEquals("Checks passing", prBadge(PR_URL, PrStatus(checkState = "SUCCESS")).tooltip)
-    }
 }
-
-private const val PR_URL = "https://github.com/acme/app/pull/7"

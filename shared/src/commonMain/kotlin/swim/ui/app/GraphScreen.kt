@@ -60,6 +60,7 @@ import swim.ui.filters.availablesOf
 import swim.ui.graph.EdgeKey
 import swim.ui.graph.GraphCanvas
 import swim.ui.graph.GraphCanvasCallbacks
+import swim.ui.graph.GraphCanvasDefaults
 import swim.ui.graph.Swim
 import swim.ui.graph.rememberGraphCanvasState
 import swim.ui.theme.SwimDimens
@@ -85,6 +86,7 @@ internal fun GraphScreen(
     val projected by holder.session.projected.collectAsState()
     val readySet by holder.session.readySet.collectAsState()
     val prStatuses by holder.session.prStatuses.collectAsState()
+    val prStatusFailed by holder.session.prStatusFailed.collectAsState()
     val showRelated by holder.session.showRelatedEdges.collectAsState()
     val showDuplicates by holder.session.showDuplicates.collectAsState()
 
@@ -119,9 +121,13 @@ internal fun GraphScreen(
     }
 
     // Drop the selections the other filters made impossible, once the lists have arrived.
-    LaunchedEffect(availables, filterState.filters) {
+    LaunchedEffect(availables, filterState.filters, filterState.urlSource) {
         if (reference.teams.isEmpty()) return@LaunchedEffect
-        val reconciled = reconcile(filterState.filters, availables)
+        val reconciled = reconcile(
+            filters = filterState.filters,
+            availables = availables,
+            keepProject = filterState.urlSource != null,
+        )
         if (reconciled != filterState.filters) holder.filters.setFilters(reconciled)
     }
 
@@ -152,8 +158,20 @@ internal fun GraphScreen(
         val next = withContext(Dispatchers.Default) {
             placeGraph(projected, filterState.groupBy, key, snapshot)
         }
-        if (next.snapshot != snapshot) holder.positions.set(next.snapshot)
-        placement = next
+        // A drag that landed while the layout ran wrote to the same key. It is the newer intent,
+        // so it wins over the positions this pass computed from the pre-drag snapshot.
+        val before = snapshot.byKey[key].orEmpty()
+        val dragged = holder.positions.get().byKey[key].orEmpty().filterNot { before[it.key] == it.value }
+        if (next.snapshot != snapshot || dragged.isNotEmpty()) {
+            val saved = next.snapshot.byKey[key].orEmpty() + dragged
+            holder.positions.set(PositionSnapshot(holder.positions.get().byKey + (key to saved)))
+        }
+        placement = if (dragged.isEmpty()) {
+            next
+        } else {
+            val positions = next.positions + dragged
+            next.copy(positions = positions, groups = groupBoxesOf(projected, filterState.groupBy, positions))
+        }
     }
 
     // A reload of the same query keeps the viewport. A different query gets a fresh fit.
@@ -165,6 +183,20 @@ internal fun GraphScreen(
         val union = ids.size + fittedIds.size - shared
         fittedIds = ids
         if (shared == 0 || (union - shared) * 2 > union) canvasState.fitToContent()
+    }
+
+    // A pasted issue URL names one issue. The filters load its team; this points the graph at it.
+    // Declared after the fit so it wins the frame they share.
+    LaunchedEffect(placement, filterState.focusIssueId) {
+        val id = filterState.focusIssueId ?: return@LaunchedEffect
+        val position = placement.positions[id] ?: return@LaunchedEffect
+        selection = setOf(id)
+        canvasState.centerOn(
+            Offset(
+                position.x + GraphCanvasDefaults.NodeWidth / 2f,
+                position.y + GraphCanvasDefaults.NodeHeight / 2f,
+            )
+        )
     }
 
     LaunchedEffect(env.commands) {
@@ -220,6 +252,7 @@ internal fun GraphScreen(
 
         ViewToolbar(
             counts = "${projected.nodes.size} issues, ${projected.edges.size} relations",
+            prStatusFailed = prStatusFailed,
             groupBy = filterState.groupBy,
             onGroupBy = holder.filters::setGroupBy,
             showRelated = showRelated,
@@ -389,6 +422,7 @@ internal fun GraphScreen(
 @Composable
 private fun ViewToolbar(
     counts: String,
+    prStatusFailed: Boolean,
     groupBy: GraphGrouping,
     onGroupBy: (GraphGrouping) -> Unit,
     showRelated: Boolean,
@@ -432,6 +466,8 @@ private fun ViewToolbar(
         )
         SwimCheckbox("Related edges", showRelated, onShowRelated)
         SwimCheckbox("Duplicates", showDuplicates, onShowDuplicates)
+        // A PR chip with no badge otherwise reads as "no reviews and no checks".
+        if (prStatusFailed) Text("PR status unavailable", color = Swim.Amber, fontSize = 11.sp)
         Text(counts, color = Swim.TextMuted, fontSize = 11.sp)
     }
 }

@@ -7,6 +7,7 @@ import swim.core.HttpRecorder
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private val URLS = listOf(
@@ -28,7 +29,7 @@ class GithubClientTest {
         val recorder = HttpRecorder(Canned(STATUSES))
         val github = GithubClient(recorder.client) { "gho_token" }
 
-        val statuses = github.getPrStatuses(URLS)
+        val statuses = github.getPrStatuses(URLS)!!
 
         assertEquals(1, recorder.requests.size)
         assertEquals("Bearer gho_token", recorder.requests[0].headers["Authorization"])
@@ -53,11 +54,24 @@ class GithubClientTest {
     }
 
     @Test
-    fun aRejectedTokenDegradesToNoStatuses() = runTest {
+    fun aRejectedTokenAnswersNullAndSaysSoInTheLog() = runTest {
         val recorder = HttpRecorder(Canned("""{"message":"Bad credentials"}""", HttpStatusCode.Unauthorized))
-        val github = GithubClient(recorder.client) { "gho_token" }
+        val lines = mutableListOf<String>()
+        val github = GithubClient(recorder.client, { lines += it }) { "gho_token" }
 
-        assertTrue(github.getPrStatuses(URLS).isEmpty())
+        assertNull(github.getPrStatuses(URLS))
+        assertEquals(1, lines.size)
+        assertContains(lines[0], "401")
+    }
+
+    @Test
+    fun aBodyWithNoDataObjectAnswersNullAndSaysSoInTheLog() = runTest {
+        val recorder = HttpRecorder(Canned("""{"errors":[{"message":"Bad credentials"}]}"""))
+        val lines = mutableListOf<String>()
+        val github = GithubClient(recorder.client, { lines += it }) { "gho_token" }
+
+        assertNull(github.getPrStatuses(URLS))
+        assertContains(lines[0], "no data object")
     }
 
     @Test
@@ -65,8 +79,17 @@ class GithubClientTest {
         val recorder = HttpRecorder(Canned(STATUSES))
         val github = GithubClient(recorder.client) { null }
 
-        assertTrue(github.getPrStatuses(URLS).isEmpty())
+        // Empty, not null: nothing failed, there is simply nothing to ask.
+        assertTrue(github.getPrStatuses(URLS)!!.isEmpty())
         assertEquals(0, recorder.requests.size)
+    }
+
+    @Test
+    fun aUrlTheFetcherCannotParseIsNotAPullRequestAnywhere() {
+        assertNull(parsePrUrl("https://github.com/orgs/acme/projects/1/pull/7"))
+        assertNull(parsePrUrl("https://example.com/acme/app/pull/7"))
+        assertNull(parsePrUrl("https://github.com/acme/app/pull/99999999999"))
+        assertEquals(7, parsePrUrl("https://github.com/acme/app/pull/7/files")?.number)
     }
 
     @Test

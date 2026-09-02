@@ -25,22 +25,24 @@ import swim.core.model.AuthError
 import swim.core.model.PrStatus
 
 /** One pull request named by a Linear attachment URL. */
-private data class PrRef(val url: String, val owner: String, val name: String, val number: Int)
+data class PrRef(val url: String, val owner: String, val name: String, val number: Int)
 
 /**
  * GitHub's GraphQL API. Swim uses it only to show the status of a pull request. The token is
- * optional. With no token, or after any failure, the status is empty and the graph still works.
+ * optional. With no token the status is empty; a failure answers null, so the surface can tell
+ * "GitHub did not answer" apart from "these pull requests have no reviews and no checks".
  */
 class GithubClient(
     private val http: HttpClient,
+    private val log: (String) -> Unit = {},
     private val token: suspend () -> String?,
 ) {
     /**
-     * The review decision and the check status for a batch of pull requests, in one request.
-     * The values travel as GraphQL variables. Swim does not put them in the query text, because
-     * an attacker can control a repository name.
+     * The review decision and the check status for a batch of pull requests, in one request,
+     * or null when GitHub could not answer. The values travel as GraphQL variables. Swim does
+     * not put them in the query text, because an attacker can control a repository name.
      */
-    suspend fun getPrStatuses(urls: List<String>): Map<String, PrStatus> {
+    suspend fun getPrStatuses(urls: List<String>): Map<String, PrStatus>? {
         val accessToken = token() ?: return emptyMap()
         val refs = urls.mapNotNull(::parsePrUrl)
         if (refs.isEmpty()) return emptyMap()
@@ -52,12 +54,18 @@ class GithubClient(
                 contentType(ContentType.Application.Json)
                 setBody(githubJson.encodeToString(GraphQlRequest.serializer(), batchedQuery(refs)))
             }
-            if (!response.status.isSuccess()) return emptyMap()
-            readStatuses(refs, response.bodyAsText())
+            if (!response.status.isSuccess()) {
+                log("github: pull-request status answered ${response.status}")
+                return null
+            }
+            val statuses = readStatuses(refs, response.bodyAsText())
+            if (statuses == null) log("github: the pull-request status body carried no data object")
+            statuses
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            emptyMap()
+            log("github: the pull-request status request failed: ${e.message}")
+            null
         }
     }
 
@@ -119,9 +127,9 @@ private fun batchedQuery(refs: List<PrRef>): GraphQlRequest {
     return GraphQlRequest("query PrStatuses($declarations) {\n$selections\n}", variables)
 }
 
-private fun readStatuses(refs: List<PrRef>, body: String): Map<String, PrStatus> {
+private fun readStatuses(refs: List<PrRef>, body: String): Map<String, PrStatus>? {
     val data = (githubJson.parseToJsonElement(body) as? JsonObject)?.get("data") as? JsonObject
-        ?: return emptyMap()
+        ?: return null
     val out = mutableMapOf<String, PrStatus>()
     refs.forEachIndexed { i, ref ->
         val pr = (data["pr$i"] as? JsonObject)?.get("pullRequest") as? JsonObject ?: return@forEachIndexed
@@ -141,7 +149,11 @@ private fun JsonElement?.asString(): String? = (this as? JsonPrimitive)?.content
 
 private val PR_URL = Regex("""github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)""")
 
-private fun parsePrUrl(url: String): PrRef? {
+/**
+ * The one definition of "a GitHub pull-request URL". Null for anything this client cannot ask
+ * GitHub about, so a chip is never drawn for a URL that can never carry a status.
+ */
+fun parsePrUrl(url: String): PrRef? {
     val match = PR_URL.find(url) ?: return null
     val number = match.groupValues[3].toIntOrNull() ?: return null
     return PrRef(url = url, owner = match.groupValues[1], name = match.groupValues[2], number = number)

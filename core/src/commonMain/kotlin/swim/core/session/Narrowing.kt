@@ -41,8 +41,16 @@ fun availableLabels(all: List<LabelSummary>, selectedTeamKeys: List<String>): Li
     return byName.values.sortedBy { it.name.lowercase() }
 }
 
-/** Drops the selections the other filters made impossible. */
-fun reconcile(filters: FilterOptions, availables: Availables): FilterOptions {
+/**
+ * Drops the selections the other filters made impossible. [keepProject] holds the project a
+ * pasted URL resolved to: that list covers completed and canceled projects, which the filter
+ * bar's list does not, so reconciling against the bar would throw the URL's project away.
+ */
+fun reconcile(
+    filters: FilterOptions,
+    availables: Availables,
+    keepProject: Boolean = false,
+): FilterOptions {
     val selected = teamKeys(filters.team)
     val kept = selected.filter { key -> availables.teams.any { it.key == key } }
     val team = when {
@@ -50,7 +58,8 @@ fun reconcile(filters: FilterOptions, availables: Availables): FilterOptions {
         kept.isEmpty() -> null
         else -> kept.joinToString(",")
     }
-    val project = filters.project?.takeIf { name -> availables.projects.any { it.name == name } }
+    val project = filters.project
+        ?.takeIf { name -> keepProject || availables.projects.any { it.name == name } }
     val label = filters.label?.takeIf { name -> availables.labels.any { it.name == name } }
     val excludeLabel = filters.excludeLabel?.takeIf { name -> availables.labels.any { it.name == name } }
 

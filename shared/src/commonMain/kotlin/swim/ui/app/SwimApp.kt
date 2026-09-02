@@ -99,7 +99,7 @@ internal fun buildSession(env: SwimEnv): SwimSession {
     val auth = LinearAuth.provider(env.tokenStore, oauth)
         ?: error("buildSession without a stored credential")
     val client = LinearClient(env.http, auth, env.config)
-    val github = GithubClient(env.http) { env.tokenStore.getGithub() }
+    val github = GithubClient(env.http, env.log) { env.tokenStore.getGithub() }
     val filters = FilterStore(env.settings)
     val positions = SettingsPositionStore(env.settings)
     return SwimSession(

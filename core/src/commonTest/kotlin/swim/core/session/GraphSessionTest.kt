@@ -2,7 +2,11 @@
 
 package swim.core.session
 
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -285,6 +289,84 @@ class GraphSessionTest {
         )
         assertEquals(cacheKey(FilterOptions(team = "ENG"), GraphGrouping.NONE), key)
     }
+
+    @Test
+    fun theLayoutKeyFollowsTheLoadedGraphNotTheArmedFilters() = runTest(UnconfinedTestDispatcher()) {
+        val f = fixture(Canned(GRAPH_PAGE))
+        f.collectGraph()
+        // A label needs no lookup, so the armed load stays the only request this test can make.
+        f.store.setLabel("bug")
+        f.store.applyFilters()
+        f.await { f.session.graph.value is GraphState.Loaded }
+        val loaded = f.session.layoutCacheKey()
+
+        // Selecting a priority only ARMS a load. The `bug` graph is still the one on screen, so
+        // its drags must keep going to the `bug` key.
+        f.store.setPriority(1)
+        f.settle()
+
+        assertEquals(loaded, f.session.layoutCacheKey())
+        f.session.savePositions(mapOf("ENG-1" to Position(1f, 2f)))
+        assertEquals(setOf(loaded), f.positions.get().byKey.keys)
+        assertEquals(cacheKey(FilterOptions(label = "bug"), GraphGrouping.NONE), loaded)
+    }
+
+    @Test
+    fun aCancelledPullRequestFetchDoesNotSuppressTheNextOne() = runTest(UnconfinedTestDispatcher()) {
+        var asked = 0
+        val gate = CompletableDeferred<Unit>()
+        val slowGithub = HttpClient(
+            MockEngine {
+                asked++
+                if (asked == 1) gate.await()
+                respond(PR_STATUS)
+            }
+        )
+        val f = fixture(Canned(GRAPH_PAGE), github = GithubClient(slowGithub) { "gho_token" })
+        backgroundScope.launch { f.session.prStatuses.collect {} }
+
+        f.store.applyFilters()
+        f.await { asked == 1 }
+
+        // The reload cancels the fetch in flight. Stamping the TTL before the call made the
+        // second ask look like a duplicate, so no badge appeared for a minute.
+        f.session.reload()
+        f.await { f.session.prStatuses.value.isNotEmpty() }
+
+        assertEquals(2, asked)
+        gate.complete(Unit)
+    }
+
+    @Test
+    fun anUnexpectedFailureBecomesAnErrorStateAndTheGraphStillLoadsAfterIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            var explode = true
+            val recorder = HttpRecorder(Canned(GRAPH_PAGE))
+            val settings = FakeSettings()
+            val store = FilterStore(settings)
+            val positions = SettingsPositionStore(settings)
+            val session = GraphSession(
+                client = LinearClient(
+                    recorder.client,
+                    { if (explode) throw IllegalStateException("socket reset") else "lin_api_key" },
+                ),
+                github = null,
+                filterStore = store,
+                positions = positions,
+                scope = backgroundScope,
+            )
+            val f = Fixture(recorder, store, positions, session, this)
+            val states = f.collectGraph()
+
+            store.applyFilters()
+            f.await { states.last() is GraphState.Error }
+            assertIs<ApiError>(assertIs<GraphState.Error>(states.last()).error)
+
+            // The flow must still be alive. Before the guard, stateIn's coroutine had died.
+            explode = false
+            session.reload()
+            f.await { states.last() is GraphState.Loaded }
+        }
 
     @Test
     fun eachChangeOptionDropsOnlyTheEdgesOwnIdentity() {

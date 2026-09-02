@@ -4,6 +4,7 @@ package swim.core.linear
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import swim.core.github.parsePrUrl
 import swim.core.model.IssueNode
 import swim.core.model.PullRequestRef
 import swim.core.model.RelationType
@@ -160,12 +161,11 @@ internal data class IssueUpdateData(val issueUpdate: SuccessPayload)
 
 /**
  * Linear's GitHub integration stores linked pull requests as issue attachments, so no GitHub
- * call is needed to discover them.
+ * call is needed to discover them. An attachment the status fetcher cannot parse is not a pull
+ * request here either, so no chip is drawn that can never carry a status.
  */
-private val PR_ATTACHMENT = Regex("""github\.com/.+/pull/\d+""")
-
 internal fun pullRequestsOf(attachments: List<AttachmentWire>): List<PullRequestRef>? {
-    val prs = attachments.filter { PR_ATTACHMENT.containsMatchIn(it.url) }
+    val prs = attachments.filter { parsePrUrl(it.url) != null }
         .map { PullRequestRef(url = it.url, title = it.title) }
     return prs.ifEmpty { null }
 }

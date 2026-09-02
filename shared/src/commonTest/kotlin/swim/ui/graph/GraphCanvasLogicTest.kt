@@ -135,10 +135,6 @@ class GraphCanvasLogicTest {
 
     @Test
     fun prChipReadsTheNumberFromTheUrl() {
-        assertEquals("412", prNumber("https://github.com/swim/swim/pull/412"))
-        assertEquals("7", prNumber("https://github.com/o/r/pull/7/files"))
-        assertNull(prNumber("https://github.com/swim/swim/issues/412"))
-
         val chip = prChip(
             url = "https://github.com/swim/swim/pull/412",
             title = "Node card rows",
@@ -162,6 +158,10 @@ class GraphCanvasLogicTest {
         assertNull(bare.reviewMark)
         assertNull(bare.checkColor)
         assertEquals("Bare", bare.tooltip)
+
+        // The label reads from the same parser the fetcher uses, so it cannot name a number
+        // GitHub will never be asked about.
+        assertEquals("PR", prChip("https://github.com/acme/app/pull/99999999999", "Huge", null).label)
     }
 
     @Test

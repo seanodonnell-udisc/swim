@@ -1,6 +1,7 @@
 package swim.ui.graph
 
 import androidx.compose.ui.graphics.Color
+import swim.core.github.parsePrUrl
 import swim.core.model.PrStatus
 import swim.core.model.WorkflowStateType
 import swim.core.session.StateCategory
@@ -81,13 +82,8 @@ internal data class PrChip(
     val checkColor: Color?,
 )
 
-private val PR_NUMBER = Regex("""/pull/(\d+)""")
-
-/** The PR number in a GitHub pull-request URL. */
-internal fun prNumber(url: String): String? = PR_NUMBER.find(url)?.groupValues?.get(1)
-
 internal fun prChip(url: String, title: String, status: PrStatus?): PrChip {
-    val number = prNumber(url)
+    val number = parsePrUrl(url)?.number
     val review = when (status?.reviewDecision?.uppercase()) {
         "APPROVED" -> Triple("✓", Swim.Green, "Approved")
         "CHANGES_REQUESTED" -> Triple("±", Swim.Red, "Changes requested")

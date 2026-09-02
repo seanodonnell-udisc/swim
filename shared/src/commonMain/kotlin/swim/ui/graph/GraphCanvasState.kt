@@ -57,6 +57,12 @@ class GraphCanvasState internal constructor() {
         offset += pixels
     }
 
+    /** Pans so [canvas], a point in canvas units, sits in the middle of the viewport. */
+    fun centerOn(canvas: Offset) {
+        if (viewport == Size.Zero) return
+        panBy(viewportCenter() - toScreen(canvas))
+    }
+
     /** Zooms about [focus], a point in screen pixels, so that point stays put. */
     fun zoomBy(factor: Float, focus: Offset) {
         val next = (scale * factor)

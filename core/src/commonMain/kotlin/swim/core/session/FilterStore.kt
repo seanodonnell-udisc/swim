@@ -1,8 +1,12 @@
 package swim.core.session
 
 import com.russhwolf.settings.Settings
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -19,6 +23,8 @@ data class FilterState(
     val groupBy: GraphGrouping = GraphGrouping.NONE,
     val shouldLoadIssues: Boolean = false,
     val urlSource: String? = null,
+    /** The issue a pasted issue URL named. The graph selects and centres it once it is placed. */
+    val focusIssueId: String? = null,
 )
 
 /** The settings key the filter bar persists under. */
@@ -36,8 +42,19 @@ class FilterStore(
 ) {
     private val _state = MutableStateFlow(restore())
 
+    private val _loads = MutableSharedFlow<FilterOptions>(
+        extraBufferCapacity = LOAD_BUFFER,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+
     /** The current filter bar state. */
     val state: StateFlow<FilterState> = _state.asStateFlow()
+
+    /**
+     * One event per load the user asked for. [state] cannot carry this: it is conflated, so a
+     * write that lands before the session's collector has run erases the load with it.
+     */
+    val loads: Flow<FilterOptions> = _loads.asSharedFlow()
 
     /** The filters as the client wants them. */
     val filters: FilterOptions get() = _state.value.filters
@@ -80,27 +97,42 @@ class FilterStore(
     fun setGroupBy(groupBy: GraphGrouping) = publish(_state.value.copy(groupBy = groupBy))
 
     /** Loads the issues the current filters name. */
-    fun applyFilters() = publish(_state.value.copy(shouldLoadIssues = true))
+    fun applyFilters() {
+        publish(_state.value.copy(shouldLoadIssues = true))
+        _loads.tryEmit(_state.value.filters)
+    }
 
     /** Clears every filter. Grouping and the load flag reset with it. */
     fun clearFilters() = publish(FilterState(groupBy = _state.value.groupBy))
 
-    /** Replaces every filter with the ones a pasted Linear URL resolved to, and loads at once. */
-    fun applyFromUrl(resolved: ResolvedLinearUrl) = publish(
-        FilterState(
-            filters = resolved.filters,
-            groupBy = _state.value.groupBy,
-            shouldLoadIssues = true,
-            urlSource = resolved.urlSource,
+    /**
+     * Replaces every filter with the ones a pasted Linear URL resolved to, and loads at once.
+     * An issue URL also names the issue, which the graph selects and centres after the load.
+     */
+    fun applyFromUrl(resolved: ResolvedLinearUrl) {
+        publish(
+            FilterState(
+                filters = resolved.filters,
+                groupBy = _state.value.groupBy,
+                shouldLoadIssues = true,
+                urlSource = resolved.urlSource,
+                focusIssueId = resolved.singleIssueId,
+            )
         )
-    )
+        _loads.tryEmit(resolved.filters)
+    }
 
     /** Hides the "from this URL" chip without touching the filters it produced. */
     fun dismissUrlSource() = publish(_state.value.copy(urlSource = null))
 
     private fun arm(edit: (FilterOptions) -> FilterOptions) = publish(
         _state.value.let {
-            it.copy(filters = edit(it.filters), shouldLoadIssues = false, urlSource = null)
+            it.copy(
+                filters = edit(it.filters),
+                shouldLoadIssues = false,
+                urlSource = null,
+                focusIssueId = null,
+            )
         }
     )
 
@@ -124,3 +156,6 @@ class FilterStore(
 private data class Persisted(val filters: FilterOptions, val groupBy: GraphGrouping)
 
 private val filterJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+// Room for a burst of applies before the session's collector is running.
+private const val LOAD_BUFFER = 8

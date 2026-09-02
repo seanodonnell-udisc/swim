@@ -126,4 +126,17 @@ class NarrowingTest {
         val filters = FilterOptions(team = " MOB , WEB ")
         assertEquals(" MOB , WEB ", reconcile(filters, Availables(teams, projects, emptyList())).team)
     }
+
+    @Test
+    fun reconcileKeepsTheProjectAPastedUrlResolvedTo() {
+        // The URL resolver sees completed projects; the filter bar's list does not.
+        val filters = FilterOptions(project = "Retired", projectId = "p-9")
+        val availables = Availables(teams, projects, emptyList())
+
+        assertNull(reconcile(filters, availables).project)
+
+        val kept = reconcile(filters, availables, keepProject = true)
+        assertEquals("Retired", kept.project)
+        assertEquals("p-9", kept.projectId)
+    }
 }

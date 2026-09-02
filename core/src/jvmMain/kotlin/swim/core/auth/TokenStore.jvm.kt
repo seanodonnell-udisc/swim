@@ -36,7 +36,13 @@ class JvmTokenStore(
             // ponytail: the secret travels in argv, which other processes of this user can read.
             // `security` has no stdin input for -w; move to a JNA Keychain binding if that matters.
             val stored = security("add-generic-password", "-U", "-s", KEYCHAIN_SERVICE, "-a", key, "-w", value)
-            if (stored != null) return
+            if (stored != null) {
+                // The file is only the fallback. A copy left there by an earlier keychain outage
+                // would be served as a live token the next time `security` fails.
+                val entries = fileEntries()
+                if (key in entries) writeFileEntries(entries - key)
+                return
+            }
             warnKeychainUnavailable()
         }
         writeFileEntries(fileEntries() + (key to value))

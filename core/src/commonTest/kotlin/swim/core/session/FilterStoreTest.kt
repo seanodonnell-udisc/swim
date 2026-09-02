@@ -1,5 +1,13 @@
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
 package swim.core.session
 
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import swim.core.model.FilterOptions
 import swim.core.model.ResolvedLinearUrl
 import kotlin.test.Test
@@ -179,6 +187,38 @@ class FilterStoreTest {
         assertFalse(restored.state.value.shouldLoadIssues)
         assertNull(restored.state.value.urlSource)
         assertEquals("WEB", restored.filters.team)
+    }
+
+    @Test
+    fun anArmedLoadSurvivesAStateWriteThatOvertakesIt() = runTest {
+        val store = FilterStore(FakeSettings())
+        val seen = mutableListOf<FilterOptions>()
+        backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) { store.loads.toList(seen) }
+
+        store.applyFromUrl(ResolvedLinearUrl(FilterOptions(team = "WEB"), urlSource = "/team/WEB"))
+        // The reconcile pass writes over the armed state before the load has been observed.
+        store.setFilters(FilterOptions(team = "WEB"))
+        runCurrent()
+
+        assertEquals(listOf(FilterOptions(team = "WEB")), seen)
+        assertFalse(store.state.value.shouldLoadIssues)
+    }
+
+    @Test
+    fun anIssueUrlKeepsTheIssueItNamed() {
+        val store = FilterStore(FakeSettings())
+
+        store.applyFromUrl(
+            ResolvedLinearUrl(
+                filters = FilterOptions(team = "ENG"),
+                singleIssueId = "ENG-42",
+                urlSource = "/issue/ENG-42",
+            )
+        )
+        assertEquals("ENG-42", store.state.value.focusIssueId)
+
+        store.setLabel("bug")
+        assertNull(store.state.value.focusIssueId)
     }
 
     @Test

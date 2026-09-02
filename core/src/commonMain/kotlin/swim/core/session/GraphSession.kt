@@ -14,7 +14,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.merge
@@ -24,6 +23,7 @@ import swim.core.analysis.findReadySet
 import swim.core.analysis.hideDuplicates
 import swim.core.github.GithubClient
 import swim.core.linear.LinearClient
+import swim.core.model.ApiError
 import swim.core.model.FilterOptions
 import swim.core.model.GraphData
 import swim.core.model.IssueEdge
@@ -45,8 +45,11 @@ sealed interface GraphState {
     /** A request is in flight. */
     data object Loading : GraphState
 
-    /** The last request answered. */
-    data class Loaded(val data: GraphData) : GraphState
+    /**
+     * The last request answered. [filters] are the ones that produced [data], which is not the
+     * live filter state: editing a filter arms a load without performing one.
+     */
+    data class Loaded(val data: GraphData, val filters: FilterOptions) : GraphState
 
     /** The last request failed. */
     data class Error(val error: SwimError) : GraphState
@@ -93,8 +96,12 @@ class GraphSession(
 
     private var lastPrFetch: Pair<List<String>, Instant>? = null
 
+    private val _prStatusFailed = MutableStateFlow(false)
+
+    // filterStore.loads is a SharedFlow, not the conflated state: an apply that a later state
+    // write overtakes must still load.
     private val triggers: Flow<FilterOptions> = merge(
-        filterStore.state.filter { it.shouldLoadIssues }.map { it.filters }.distinctUntilChanged(),
+        filterStore.loads.distinctUntilChanged(),
         reloads.map { filterStore.filters },
     )
 
@@ -109,11 +116,15 @@ class GraphSession(
                 emit(GraphState.Loading)
                 emit(
                     try {
-                        GraphState.Loaded(client.getIssuesWithRelations(filters))
+                        GraphState.Loaded(client.getIssuesWithRelations(filters), filters)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: SwimError) {
                         GraphState.Error(e)
+                    } catch (e: Exception) {
+                        // Anything unexpected would escape stateIn, and WhileSubscribed never
+                        // restarts a failed sharing coroutine: the graph would freeze for good.
+                        GraphState.Error(ApiError("Linear could not answer: ${e.message}"))
                     }
                 )
             }
@@ -139,6 +150,12 @@ class GraphSession(
             project((state as? GraphState.Loaded)?.data ?: EMPTY_GRAPH, related, duplicates)
         }.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), EMPTY_GRAPH)
     }
+
+    /**
+     * Whether the last pull-request status request failed. The badges then keep whatever they
+     * had, so the surface must say the status is unavailable rather than show nothing.
+     */
+    val prStatusFailed: StateFlow<Boolean> = _prStatusFailed.asStateFlow()
 
     /**
      * Review and check status for every pull request the graph links to, in one batch per load.
@@ -197,8 +214,15 @@ class GraphSession(
         reload()
     }
 
-    /** The key the current query's hand-placed positions are saved under. */
-    fun layoutCacheKey(): String = filterStore.state.value.let { cacheKey(it.filters, it.groupBy) }
+    /**
+     * The key the visible query's hand-placed positions are saved under. The filters come from
+     * the loaded graph, not from the live filter bar, which runs ahead of it as soon as the user
+     * edits a filter. Grouping stays live, because grouping re-draws without a load.
+     */
+    fun layoutCacheKey(): String {
+        val loaded = (graph.value as? GraphState.Loaded)?.filters ?: filterStore.filters
+        return cacheKey(loaded, filterStore.state.value.groupBy)
+    }
 
     /** Merges dragged node positions into the current query's saved layout. */
     fun savePositions(moved: Map<String, Position>) {
@@ -214,8 +238,14 @@ class GraphSession(
         val previous = lastPrFetch
         val now = Clock.System.now()
         if (previous != null && previous.first == urls && now - previous.second < PR_STATUS_TTL) return null
-        lastPrFetch = urls to now
-        return github.getPrStatuses(urls)
+
+        // Stamped after the answer, not before: transformLatest cancels this block on the next
+        // load, and a cancelled fetch that counted as done would blank every badge for a minute.
+        val result = github.getPrStatuses(urls)
+        _prStatusFailed.value = result == null
+        if (result == null) return null
+        lastPrFetch = urls to Clock.System.now()
+        return result
     }
 
     private fun relationIdOf(edge: IssueEdge): String = edge.relationId

@@ -30,6 +30,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -53,6 +54,7 @@ import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -160,6 +162,9 @@ fun GraphCanvas(
             .clipToBounds()
             .onSizeChanged { state.viewport = Size(it.width.toFloat(), it.height.toFloat()) }
             .focusRequester(focus)
+            // A KeyUp for space goes to whoever has focus, so focus lost while space is held
+            // would leave the canvas panning for good.
+            .onFocusChanged { if (!it.isFocused) state.spaceDown = false }
             .focusable()
             .onPreviewKeyEvent { event -> handleKey(event.key, event.type, state, callbacks) }
             .modifierTracking(state)
@@ -460,7 +465,8 @@ private fun Modifier.canvasTaps(
         onDoubleTap = { state.fitToContent() },
         onTap = { position ->
             val point = state.toCanvas(position)
-            val edge = hitEdge(graph, rects, point, 8f / state.scale, detours)
+            // toCanvas divides by scale AND density, so the tolerance must too.
+            val edge = hitEdge(graph, rects, point, 8f / (state.scale * state.density), detours)
             if (edge == null) {
                 state.dismissPanels()
                 callbacks.onSelectionChange(emptySet())
@@ -631,16 +637,28 @@ private fun Minimap(
             .border(1.dp, Swim.Border, RoundedCornerShape(4.dp))
             .clip(RoundedCornerShape(4.dp))
             .pointerInput(bounds) {
-                detectTapGestures { tap ->
-                    val fit = minimapFit(bounds, size.width.toFloat(), size.height.toFloat())
-                    val point = Offset(
-                        bounds.left + (tap.x - fit.second.x) / fit.first,
-                        bounds.top + (tap.y - fit.second.y) / fit.first,
+                fun centreOn(at: Offset) {
+                    val (fit, origin) = minimapFit(bounds, size.width.toFloat(), size.height.toFloat())
+                    state.centerOn(
+                        Offset(
+                            bounds.left + (at.x - origin.x) / fit,
+                            bounds.top + (at.y - origin.y) / fit,
+                        )
                     )
-                    state.panBy(
-                        Offset(state.viewport.width / 2f, state.viewport.height / 2f) -
-                            state.toScreen(point),
-                    )
+                }
+                // The down is consumed, so the canvas underneath does not draw a marquee behind
+                // the minimap. detectTapGestures leaves it unconsumed and also loses the tap.
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    down.consume()
+                    centreOn(down.position)
+                    while (true) {
+                        val change = awaitPointerEvent().changes.firstOrNull { it.pressed } ?: break
+                        if (change.positionChanged()) {
+                            centreOn(change.position)
+                            change.consume()
+                        }
+                    }
                 }
             },
     ) {

@@ -41,6 +41,7 @@ import swim.core.model.ProjectSummary
 import swim.core.model.RateLimitedError
 import swim.core.model.RelationType
 import swim.core.model.ScopeError
+import swim.core.model.SwimError
 import swim.core.model.TeamSummary
 import swim.core.model.UserSummary
 import swim.core.model.Viewer
@@ -339,9 +340,11 @@ class LinearClient(
     ): T {
         var retried = false
         while (true) {
-            val response = try {
-                http.post(GRAPHQL_URL) {
-                    header(HttpHeaders.Authorization, auth.authorization())
+            // Resolved outside the catch: an expired session is an AuthError, not a network one.
+            val authorization = auth.authorization()
+            val (response, body) = try {
+                val answer = http.post(GRAPHQL_URL) {
+                    header(HttpHeaders.Authorization, authorization)
                     contentType(ContentType.Application.Json)
                     setBody(
                         linearJson.encodeToString(
@@ -350,13 +353,15 @@ class LinearClient(
                         )
                     )
                 }
+                answer to answer.bodyAsText()
             } catch (e: CancellationException) {
+                throw e
+            } catch (e: SwimError) {
                 throw e
             } catch (e: Exception) {
                 throw NetworkError("Could not reach Linear: ${e.message}", e)
             }
 
-            val body = response.bodyAsText()
             val envelope = try {
                 linearJson.decodeFromString(GraphQlEnvelope.serializer(serializer), body)
             } catch (e: Exception) {

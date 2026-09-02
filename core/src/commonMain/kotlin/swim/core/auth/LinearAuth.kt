@@ -22,7 +22,10 @@ object LinearAuth {
             } else {
                 val refreshToken = current.refreshToken ?: throw AuthError(EXPIRED)
                 val client = oauth ?: throw AuthError(EXPIRED)
-                val renewed = client.refresh(refreshToken).copy(mode = LinearAuthMode.OAUTH)
+                // Linear may omit refresh_token on a refresh, which means "keep the one you have".
+                val renewed = client.refresh(refreshToken).let {
+                    it.copy(mode = LinearAuthMode.OAUTH, refreshToken = it.refreshToken ?: refreshToken)
+                }
                 store.setLinear(renewed)
                 renewed.accessToken
             }
