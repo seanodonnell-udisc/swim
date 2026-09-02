@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -32,7 +33,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -64,6 +68,7 @@ internal fun IssueCard(
     node: IssueNode,
     ready: Boolean,
     selected: Boolean,
+    simplified: Boolean,
     prStatuses: Map<String, PrStatus>,
     users: List<UserSummary>,
     handlers: CardHandlers,
@@ -113,24 +118,40 @@ internal fun IssueCard(
                         handlers.onDrag(amount / density)
                     }
                 }
+                .then(
+                    if (simplified) {
+                        Modifier.clip(RoundedCornerShape(6.dp)).drawBehind {
+                            drawRect(
+                                color = categoryColor(category),
+                                size = Size(14.dp.toPx(), size.height),
+                            )
+                        }
+                    } else {
+                        Modifier
+                    },
+                )
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            CardHeader(node, category, ready, copied) {
-                copied = true
-                callbacks.onCopyId(node.identifier)
+            if (simplified) {
+                SimpleBody(node)
+            } else {
+                CardHeader(node, category, ready, copied) {
+                    copied = true
+                    callbacks.onCopyId(node.identifier)
+                }
+                Text(
+                    text = node.title,
+                    color = Swim.Text,
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
+                )
+                Spacer(Modifier.weight(1f))
+                CardFooter(node, category, prStatuses, users, callbacks)
             }
-            Text(
-                text = node.title,
-                color = Swim.Text,
-                fontSize = 12.sp,
-                lineHeight = 15.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
-            )
-            Spacer(Modifier.weight(1f))
-            CardFooter(node, category, prStatuses, users, callbacks)
         }
 
         LinkHandle(
@@ -142,6 +163,26 @@ internal fun IssueCard(
                 .alpha(if (hovered) 1f else 0.35f),
         )
         if (hovered) CardTooltip(node.title, Modifier.align(Alignment.TopStart))
+    }
+}
+
+/** What a card shows when it is too small to read: the priority dot and the identifier only. */
+@Composable
+private fun SimpleBody(node: IssueNode) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxWidth().fillMaxHeight().padding(start = 8.dp),
+    ) {
+        Box(Modifier.size(16.dp).background(priorityColor(node.priority), CircleShape))
+        Text(
+            text = node.identifier,
+            color = Swim.Cyan,
+            fontSize = 26.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+        )
     }
 }
 

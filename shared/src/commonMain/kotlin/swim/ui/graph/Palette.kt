@@ -30,4 +30,7 @@ object GraphCanvasDefaults {
     const val NodeHeight: Float = 120f
     const val MinScale: Float = 0.1f
     const val MaxScale: Float = 2.0f
+
+    /** Below this scale a card shows only its identifier, its priority and its state colour. */
+    const val SimplifiedBelow: Float = 0.5f
 }

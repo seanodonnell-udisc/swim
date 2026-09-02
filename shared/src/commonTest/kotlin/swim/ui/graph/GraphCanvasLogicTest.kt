@@ -2,6 +2,7 @@ package swim.ui.graph
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import swim.core.model.PrStatus
 import swim.core.model.RelationType
 import swim.core.model.WorkflowStateType
@@ -193,5 +194,76 @@ class GraphCanvasLogicTest {
         assertEquals(0.43f, scale, absoluteTolerance = 0.001f)
         assertEquals(4f, origin.x, absoluteTolerance = 0.001f)
         assertEquals(17f, origin.y, absoluteTolerance = 0.001f)
+    }
+
+    @Test
+    fun fitAnchorsTheAxisThatHasRoomAndCentresTheOneThatDoesNot() {
+        assertEquals(48f, fitAxis(viewport = 900f, content = 200f))
+        assertEquals(-50f, fitAxis(viewport = 900f, content = 1000f))
+        // Exactly the padded viewport: anchoring and centring agree.
+        assertEquals(48f, fitAxis(viewport = 900f, content = 804f))
+    }
+
+    @Test
+    fun fitHugsTheTopLeftWhenTheGraphIsWideAndShort() {
+        val canvas = state(density = 1f)
+        canvas.viewport = Size(1440f, 900f)
+        canvas.contentBounds = Rect(100f, 50f, 1300f, 250f)
+        canvas.fitToContent()
+        // 1200x200 fits at 1:1 with room on both axes, so both edges take the padding.
+        assertEquals(1f, canvas.scale, absoluteTolerance = 0.001f)
+        assertEquals(48f, canvas.toScreen(Offset(100f, 50f)).x, absoluteTolerance = 0.01f)
+        assertEquals(48f, canvas.toScreen(Offset(100f, 50f)).y, absoluteTolerance = 0.01f)
+    }
+
+    @Test
+    fun aDetourLeavesBothCardsOnTheOutwardSideAndBowsPastThem() {
+        val from = Rect(0f, 400f, 270f, 520f)
+        val to = Rect(0f, 0f, 270f, 120f)
+        // Both cards sit left of the graph centre, so the bow goes left.
+        val (a, b) = routeFor(RelationType.BLOCKS, from, to, detour = true, centerX = 800f)
+        assertEquals(Offset(0f, 460f), a.point)
+        assertEquals(Offset(0f, 60f), b.point)
+        assertEquals(-60f, a.control?.x)
+        assertEquals(-60f, b.control?.x)
+        // The curve clears the cards it used to cross.
+        assertTrue(edgeSamples(a, b).all { it.x <= 0.01f }, "the bow re-entered the column")
+    }
+
+    @Test
+    fun aDetourBowsRightWhenTheEdgeSitsRightOfTheCentre() {
+        val from = Rect(1000f, 400f, 1270f, 520f)
+        val to = Rect(1000f, 0f, 1270f, 120f)
+        val (a, _) = routeFor(RelationType.BLOCKS, from, to, detour = true, centerX = 500f)
+        assertEquals(1270f, a.point.x)
+        assertEquals(1330f, a.control?.x)
+    }
+
+    @Test
+    fun routeForWithoutADetourIsTheOrdinaryAnchoring() {
+        val from = Rect(0f, 0f, 270f, 120f)
+        val to = Rect(0f, 300f, 270f, 420f)
+        assertEquals(
+            anchorsFor(RelationType.BLOCKS, from, to),
+            routeFor(RelationType.BLOCKS, from, to, detour = false, centerX = 135f),
+        )
+    }
+
+    @Test
+    fun theMinimapRectFallsBackToTheContentWhenEverythingIsInView() {
+        val content = Rect(40f, 30f, 140f, 90f)
+        val view = Rect(-500f, -500f, 900f, 900f)
+        assertEquals(
+            content,
+            minimapViewRect(view, content, width = 180f, height = 120f, inset = 1f),
+        )
+    }
+
+    @Test
+    fun theMinimapRectClipsToTheMinimapWithAnInset() {
+        val content = Rect(4f, 4f, 176f, 116f)
+        val view = Rect(-30f, 20f, 90f, 400f)
+        val rect = minimapViewRect(view, content, width = 180f, height = 120f, inset = 1f)
+        assertEquals(Rect(1f, 20f, 90f, 119f), rect)
     }
 }

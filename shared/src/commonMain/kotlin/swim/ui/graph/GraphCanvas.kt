@@ -20,6 +20,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -64,7 +66,6 @@ import swim.core.model.PrStatus
 import swim.core.model.RelationType
 import swim.core.model.UserSummary
 import swim.layout.Position
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -132,6 +133,12 @@ fun GraphCanvas(
     val ids = remember(graph) { graph.nodes.map { it.identifier } }
     val focus = remember { FocusRequester() }
 
+    val detours = remember(crossLinks, cycleEdges) { crossLinks + cycleEdges }
+    // Only flips at the threshold, so a zoom frame does not recompose every card.
+    val simplified by remember(state) {
+        derivedStateOf { state.scale < GraphCanvasDefaults.SimplifiedBelow }
+    }
+
     val rects = buildRects(positions, ids, state.dragIds, state.dragDelta)
     val bounds = contentBoundsOf(rects.values)
     SideEffect {
@@ -163,7 +170,7 @@ fun GraphCanvas(
                         if (state.additive) selection else emptySet(),
                 )
             }
-            .canvasTaps(state, rects, graph, callbacks),
+            .canvasTaps(state, rects, graph, detours, callbacks),
     ) {
         Box(
             modifier = Modifier
@@ -193,6 +200,7 @@ fun GraphCanvas(
                                 node = nodes.getValue(id),
                                 ready = id in readySet,
                                 selected = id in selection,
+                                simplified = simplified,
                                 prStatuses = prStatuses,
                                 users = users,
                                 handlers = remember(id, selection, positions, callbacks) {
@@ -445,13 +453,14 @@ private fun Modifier.canvasTaps(
     state: GraphCanvasState,
     rects: Map<String, Rect>,
     graph: GraphData,
+    detours: Set<EdgeKey>,
     callbacks: GraphCanvasCallbacks,
-) = pointerInput(state, rects) {
+) = pointerInput(state, rects, detours) {
     detectTapGestures(
         onDoubleTap = { state.fitToContent() },
         onTap = { position ->
             val point = state.toCanvas(position)
-            val edge = hitEdge(graph, rects, point, 8f / state.scale)
+            val edge = hitEdge(graph, rects, point, 8f / state.scale, detours)
             if (edge == null) {
                 state.dismissPanels()
                 callbacks.onSelectionChange(emptySet())
@@ -468,17 +477,20 @@ internal fun hitEdge(
     rects: Map<String, Rect>,
     point: Offset,
     tolerance: Float,
+    detours: Set<EdgeKey> = emptySet(),
 ): EdgeKey? {
     var best: EdgeKey? = null
     var bestDistance = tolerance
+    val centerX = contentBoundsOf(rects.values)?.center?.x ?: 0f
     for (edge in graph.edges) {
         val from = rects[edge.from] ?: continue
         val to = rects[edge.to] ?: continue
-        val (a, b) = anchorsFor(edge.type, from, to)
+        val key = edge.key()
+        val (a, b) = routeFor(edge.type, from, to, key in detours, centerX)
         val distance = distanceToPolyline(edgeSamples(a, b), point)
         if (distance <= bestDistance) {
             bestDistance = distance
-            best = edge.key()
+            best = key
         }
     }
     return best
@@ -490,13 +502,14 @@ private fun DrawScope.drawEdges(
     cycleEdges: Set<EdgeKey>,
     crossLinks: Set<EdgeKey>,
 ) {
+    val centerX = contentBoundsOf(rects.values)?.center?.x ?: 0f
     for (edge in graph.edges) {
         val from = rects[edge.from] ?: continue
         val to = rects[edge.to] ?: continue
         val key = edge.key()
-        val (a, b) = anchorsFor(edge.type, from, to)
         val cycle = key in cycleEdges
         val cross = key in crossLinks
+        val (a, b) = routeFor(edge.type, from, to, cycle || cross, centerX)
         val color = when (edge.type) {
             RelationType.BLOCKS -> Swim.Red
             RelationType.RELATED -> Swim.Muted
@@ -644,18 +657,18 @@ private fun Minimap(
                 center = map(rect.center),
             )
         }
-        val viewTopLeft = map(state.toCanvas(Offset.Zero))
-        val viewBottomRight =
-            map(state.toCanvas(Offset(state.viewport.width, state.viewport.height)))
-        drawRect(
-            color = Swim.Focus,
-            topLeft = viewTopLeft,
-            size = Size(
-                abs(viewBottomRight.x - viewTopLeft.x),
-                abs(viewBottomRight.y - viewTopLeft.y),
-            ),
-            style = Stroke(1f),
+        val view = Rect(
+            map(state.toCanvas(Offset.Zero)),
+            map(state.toCanvas(Offset(state.viewport.width, state.viewport.height))),
         )
+        val rect = minimapViewRect(
+            view = view,
+            content = Rect(map(bounds.topLeft), map(bounds.bottomRight)),
+            width = size.width,
+            height = size.height,
+            inset = 1f * density,
+        )
+        drawRect(Swim.Focus, rect.topLeft, rect.size, style = Stroke(1f))
     }
 }
 

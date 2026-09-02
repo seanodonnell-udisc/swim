@@ -70,18 +70,25 @@ class GraphCanvasState internal constructor() {
 
     fun zoomOut() = zoomBy(1f / 1.2f, viewportCenter())
 
-    /** Centers the graph and scales it to fit, never above 1:1. */
+    /**
+     * Scales the graph to fit, never above 1:1. An axis with room to spare anchors to the start
+     * edge with the standard padding, so a wide short graph hugs the top left instead of floating.
+     */
     fun fitToContent() {
         val bounds = contentBounds ?: return
         if (viewport.width <= 0f || viewport.height <= 0f) return
         if (bounds.width <= 0f || bounds.height <= 0f) return
-        val padding = 48f
+        val padding = FIT_PADDING
         val fit = min(
             (viewport.width - padding * 2f) / (bounds.width * density),
             (viewport.height - padding * 2f) / (bounds.height * density),
         )
         scale = min(fit, 1f).coerceIn(GraphCanvasDefaults.MinScale, GraphCanvasDefaults.MaxScale)
-        offset = viewportCenter() - bounds.center * (density * scale)
+        val unit = density * scale
+        offset = Offset(
+            fitAxis(viewport.width, bounds.width * unit),
+            fitAxis(viewport.height, bounds.height * unit),
+        ) - bounds.topLeft * unit
     }
 
     /** Closes the relation chooser and the edge panel. */
@@ -99,6 +106,12 @@ class GraphCanvasState internal constructor() {
         fitToContent()
     }
 }
+
+internal const val FIT_PADDING = 48f
+
+/** Where the content starts on one axis: the padding when it fits with room, otherwise centred. */
+internal fun fitAxis(viewport: Float, content: Float): Float =
+    if (content < viewport - FIT_PADDING * 2f) FIT_PADDING else (viewport - content) / 2f
 
 @Composable
 fun rememberGraphCanvasState(): GraphCanvasState = remember { GraphCanvasState() }

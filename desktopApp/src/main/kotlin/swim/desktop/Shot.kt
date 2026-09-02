@@ -12,6 +12,8 @@ import kotlinx.coroutines.SupervisorJob
 import swim.core.auth.LinearTokens
 import swim.core.auth.TokenStore
 import swim.core.config.loadConfig
+import swim.ui.app.AppCommand
+import swim.ui.app.AppCommands
 import swim.ui.app.SwimApp
 import swim.ui.app.SwimEnv
 import java.io.File
@@ -35,6 +37,17 @@ fun main(args: Array<String>) {
         SwimEnv(http, tokenStore(), Settings(), scope(), loadConfig(), devAutoload = autoload, log = Log::line),
     )
 
+    // Five zoom-outs land near 0.40, under the scale at which a card drops to its simple form.
+    val zoom = AppCommands()
+    shoot(
+        outDir, "p3b-shot-zoomed-out.png", 60,
+        SwimEnv(
+            http, tokenStore(), Settings(), scope(), loadConfig(),
+            commands = zoom, devAutoload = autoload, log = Log::line,
+        ),
+        atFrame = 40 to { repeat(5) { zoom.send(AppCommand.ZOOM_OUT) } },
+    )
+
     val saved = Settings().getStringOrNull(FILTERS)
     grouped(saved)
     shoot(
@@ -47,13 +60,20 @@ fun main(args: Array<String>) {
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
-private fun shoot(outDir: File, name: String, frames: Int, env: SwimEnv) {
+private fun shoot(
+    outDir: File,
+    name: String,
+    frames: Int,
+    env: SwimEnv,
+    atFrame: Pair<Int, () -> Unit>? = null,
+) {
     val scene = ImageComposeScene(width = WIDTH, height = HEIGHT, density = Density(1f)) {
         SwimApp(env)
     }
     try {
         var image = scene.render()
-        repeat(frames) {
+        repeat(frames) { frame ->
+            if (atFrame != null && frame == atFrame.first) atFrame.second()
             Thread.sleep(FRAME_PAUSE_MS)
             image = scene.render()
         }

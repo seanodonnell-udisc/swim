@@ -156,6 +156,17 @@ internal fun GraphScreen(
         placement = next
     }
 
+    // A reload of the same query keeps the viewport. A different query gets a fresh fit.
+    var fittedIds by remember { mutableStateOf(emptySet<String>()) }
+    LaunchedEffect(placement) {
+        val ids = placement.positions.keys
+        if (ids.isEmpty()) return@LaunchedEffect
+        val shared = ids.count { it in fittedIds }
+        val union = ids.size + fittedIds.size - shared
+        fittedIds = ids
+        if (shared == 0 || (union - shared) * 2 > union) canvasState.fitToContent()
+    }
+
     LaunchedEffect(env.commands) {
         env.commands.commands.collect { command ->
             when (command) {
