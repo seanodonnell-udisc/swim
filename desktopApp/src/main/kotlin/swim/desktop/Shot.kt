@@ -1,6 +1,10 @@
 package swim.desktop
 
 import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.InternalComposeUiApi
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerButton
@@ -30,7 +34,7 @@ import java.io.File
  *
  * ponytail: a dev tool, not a test. It talks to the live workspace on purpose.
  */
-@OptIn(ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalComposeUiApi::class, InternalComposeUiApi::class)
 fun main(args: Array<String>) {
     val outDir = File(args.firstOrNull() ?: ".").also { it.mkdirs() }
     val http = HttpClient(OkHttp)
@@ -54,6 +58,21 @@ fun main(args: Array<String>) {
     shoot(
         outDir, "p3b-shot-zoomed-out.png", 60, graphEnv(zoom),
         atFrame = 40 to { _ -> repeat(5) { zoom.send(AppCommand.ZOOM_OUT) } },
+    )
+
+    // One shot per editing mode. Interact also hovers a card, so its handles show.
+    shoot(
+        // 90 frames: these two stage a hover late, so they must not race the sandbox load.
+        outDir, "p3d-shot-arrange.png", 90, graphEnv(),
+        atFrame = 70 to { scene -> scene.move(FIRST_CARD) },
+    )
+    shoot(
+        outDir, "p3d-shot-interact.png", 90, graphEnv(),
+        atFrame = 70 to { scene ->
+            scene.sendKeyEvent(KeyEvent(Key.H, KeyEventType.KeyDown))
+            scene.render()
+            scene.move(FIRST_CARD)
+        },
     )
 
     shoot(

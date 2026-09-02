@@ -67,6 +67,7 @@ class CanvasInteractionTest {
                 },
                 onRemoveRelation = { log += "remove:${it.from}>${it.to}:${it.type}" },
                 onSelectionChange = { log += "select:${it.sorted()}" },
+                onNodesMoved = { moved -> log += "moved:${moved.keys.sorted().joinToString(",")}" },
                 onRelayout = { log += "relayout" },
                 onReload = { log += "reload" },
             ),
@@ -214,6 +215,8 @@ class CanvasInteractionTest {
 
     @Test
     fun aHandleDragOntoAnotherCardCreatesARelation() {
+        scene.sendKeyEvent(keyDown(Key.H))
+        scene.render()
         val card = GraphCanvasPreview.positions.getValue("ENG-101")
         val handle = state.toScreen(
             Offset(
@@ -252,6 +255,74 @@ class CanvasInteractionTest {
         )
         click(Offset(panel.at.x + 20f, panel.at.y + MENU_PADDING + MENU_ROW / 2f))
         assertEquals(listOf("create:ENG-101:ENG-103:BLOCKS:false"), log)
+    }
+
+    @Test
+    fun vAndHSwitchTheMode() {
+        assertEquals(CanvasMode.ARRANGE, state.mode, "a new canvas must start in Arrange")
+        scene.sendKeyEvent(keyDown(Key.H))
+        scene.render()
+        assertEquals(CanvasMode.INTERACT, state.mode)
+        scene.sendKeyEvent(keyDown(Key.V))
+        scene.render()
+        assertEquals(CanvasMode.ARRANGE, state.mode)
+    }
+
+    @Test
+    fun arrangeMovesACardAndInteractPansInstead() {
+        val card = cardCentre("ENG-101")
+        dragBy(card, Offset(60f, 40f))
+        assertTrue(log.any { it.startsWith("moved:ENG-101") }, "Arrange did not move the card: $log")
+
+        log.clear()
+        scene.sendKeyEvent(keyDown(Key.H))
+        scene.render()
+        val before = state.offset
+        dragBy(cardCentre("ENG-102"), Offset(70f, 50f))
+
+        assertTrue(log.none { it.startsWith("moved") }, "a card moved in Pan and link: $log")
+        assertTrue(
+            abs(state.offset.x - before.x) > 40f && abs(state.offset.y - before.y) > 25f,
+            "the drag over a card did not pan: $before to ${state.offset}",
+        )
+    }
+
+    @Test
+    fun theMarqueeIsAnArrangeToolOnly() {
+        // Empty canvas, below the graph.
+        val empty = Offset(1100f, 620f)
+        dragBy(empty, Offset(-500f, -300f))
+        assertTrue(
+            log.any { it.startsWith("select:[ENG") },
+            "Arrange drew no selection box: $log",
+        )
+
+        log.clear()
+        scene.sendKeyEvent(keyDown(Key.H))
+        scene.render()
+        val before = state.offset
+        dragBy(empty, Offset(-120f, -80f))
+
+        assertTrue(log.none { it.startsWith("select:[ENG") }, "a marquee ran in Pan and link: $log")
+        assertTrue(abs(state.offset.x - before.x) > 60f, "the empty drag did not pan")
+    }
+
+    @Test
+    fun theRelationHandlesAreHiddenInArrange() {
+        val card = GraphCanvasPreview.positions.getValue("ENG-101")
+        val handle = state.toScreen(
+            Offset(
+                card.x + GraphCanvasDefaults.NodeWidth / 2f,
+                card.y + GraphCanvasDefaults.NodeHeight - 8f,
+            )
+        )
+        move(state.toScreen(Offset(card.x + 40f, card.y + 40f)))
+        move(handle)
+        // Arrange is the default, so the handle is not there. The drag falls through to the card.
+        dragBy(handle, cardCentre("ENG-103") - handle)
+
+        assertNull(state.panel, "a handle drag offered a relation in Arrange")
+        assertTrue(log.none { it.startsWith("create") }, "Arrange created a relation: $log")
     }
 
     @Test
@@ -304,6 +375,29 @@ class CanvasInteractionTest {
         )
         scene.sendPointerEvent(
             PointerEventType.Release, at,
+            button = PointerButton.Primary,
+            buttons = PointerButtons(),
+        )
+        scene.render()
+    }
+
+    /** A left drag: press, three moves so the slop is passed, release. */
+    private fun dragBy(from: Offset, delta: Offset) {
+        move(from)
+        scene.sendPointerEvent(
+            PointerEventType.Press, from,
+            button = PointerButton.Primary,
+            buttons = PointerButtons(isPrimaryPressed = true),
+        )
+        listOf(0.3f, 0.7f, 1f).forEach { fraction ->
+            scene.sendPointerEvent(
+                PointerEventType.Move, from + delta * fraction,
+                buttons = PointerButtons(isPrimaryPressed = true),
+            )
+            scene.render()
+        }
+        scene.sendPointerEvent(
+            PointerEventType.Release, from + delta,
             button = PointerButton.Primary,
             buttons = PointerButtons(),
         )

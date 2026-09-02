@@ -164,18 +164,28 @@ fun GraphCanvas(
             .onFocusChanged { if (!it.isFocused) state.spaceDown = false }
             .focusable()
             .onPreviewKeyEvent { event -> handleKey(event, state, callbacks) }
-            .pointerHoverIcon(if (state.pick != null) PointerIcon.Crosshair else PointerIcon.Default)
+            .pointerHoverIcon(
+                when {
+                    state.pick != null -> PointerIcon.Crosshair
+                    state.mode == CanvasMode.INTERACT -> PointerIcon.Hand
+                    else -> PointerIcon.Default
+                }
+            )
             .modifierTracking(state)
             .secondaryGesture(state) { at -> state.menu = menuAt(at, state, rects, graph) }
             .pickTarget(state, rects, callbacks)
+            .interactPan(state)
             .scrollAndZoom(state)
+            // canvasTaps must come first. Its tap detector consumes the down, and the later a
+            // pointer modifier is declared the earlier it sees the Main pass, so the other way
+            // round the selection box never got an unconsumed down to start from.
+            .canvasTaps(state, rects, graph, callbacks)
             .panAndBoxSelect(state) { box ->
                 callbacks.onSelectionChange(
                     rects.filterValues { it.overlaps(box) }.keys +
                         if (state.additive) selection else emptySet(),
                 )
-            }
-            .canvasTaps(state, rects, graph, callbacks),
+            },
     ) {
         Box(
             modifier = Modifier
@@ -218,6 +228,8 @@ fun GraphCanvas(
                                 ready = id in readySet,
                                 selected = id in selection,
                                 linking = id == linkingFrom,
+                                mode = state.mode,
+                                onOverHandle = { state.overHandle = it },
                                 prStatuses = prStatuses,
                                 users = users,
                                 handlers = remember(id, selection, positions, callbacks) {
@@ -257,6 +269,7 @@ fun GraphCanvas(
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 36.dp),
         )
 
+        ModeToggle(state, Modifier.align(Alignment.TopStart).padding(12.dp))
         HintBar(state, selection.size, Modifier.align(Alignment.BottomCenter))
         if (state.pick != null) PickHint(Modifier.align(Alignment.TopCenter))
 
@@ -402,6 +415,14 @@ private fun handleKey(
             if (!hadSurface) callbacks.onSelectionChange(emptySet())
             true
         }
+        Key.V -> {
+            state.mode = CanvasMode.ARRANGE
+            true
+        }
+        Key.H -> {
+            state.mode = CanvasMode.INTERACT
+            true
+        }
         Key.Equals, Key.Plus, Key.NumPadAdd -> {
             state.zoomIn()
             true
@@ -472,6 +493,35 @@ private fun Modifier.secondaryGesture(
     }
 }
 
+/**
+ * In Interact, a left drag pans wherever it starts, cards included. The press is not consumed
+ * until it travels, so a plain click still selects a card and still works on a chip. A press that
+ * starts on a relation handle is left alone: that drag draws an edge.
+ */
+private fun Modifier.interactPan(state: GraphCanvasState) = pointerInput(state) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        if (state.mode != CanvasMode.INTERACT || state.overHandle) return@awaitEachGesture
+        var travelled = false
+        var last = down.position
+        while (true) {
+            val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                .firstOrNull { it.id == down.id } ?: break
+            if (!change.pressed) break
+            if (!travelled &&
+                (change.position - down.position).getDistance() > viewConfiguration.touchSlop
+            ) {
+                travelled = true
+            }
+            if (travelled) {
+                change.consume()
+                state.panBy(change.position - last)
+            }
+            last = change.position
+        }
+    }
+}
+
 /** While a relation is waiting for its other end, the next click names it and nothing else. */
 private fun Modifier.pickTarget(
     state: GraphCanvasState,
@@ -527,7 +577,7 @@ private fun Modifier.panAndBoxSelect(
 ) = pointerInput(state) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = true)
-        val panning = state.spaceDown
+        val panning = state.spaceDown || state.mode == CanvasMode.INTERACT
         val origin = down.position
         var centroid = origin
         var spread = 0f

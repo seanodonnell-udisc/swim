@@ -33,6 +33,12 @@ internal sealed interface CanvasMenu {
 /** A relation drag in flight, from one of a card's handles to wherever the pointer is. */
 internal data class LinkDrag(val from: String, val at: Offset, val type: RelationType)
 
+/**
+ * What a plain left drag does. Arrange moves cards and draws a selection box; Interact pans and
+ * offers the relation handles. Held space pans in either one.
+ */
+enum class CanvasMode { ARRANGE, INTERACT }
+
 /** Pick-target mode: the relation is chosen, and the next card click names the other end. */
 internal data class PickTarget(
     val from: String,
@@ -71,8 +77,14 @@ class GraphCanvasState internal constructor() {
     /** Whether the gestures-and-shortcuts overlay is up. The shell shows it once on first run. */
     var shortcutsVisible by mutableStateOf(false)
 
+    /** UI state only. Every launch starts in Arrange. */
+    var mode by mutableStateOf(CanvasMode.ARRANGE)
+
     internal var additive = false
     internal var spaceDown = false
+
+    /** Set while the pointer rests on a relation handle, so a pan does not steal its drag. */
+    internal var overHandle = false
     private var fitted = false
 
     /** Screen pixels to canvas units. */

@@ -3,6 +3,9 @@ package swim.ui.graph
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,13 +14,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
@@ -26,9 +35,68 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
-/** The default hint. It names the two gestures nothing else on screen advertises. */
-private const val IDLE_HINT =
-    "Drag a handle to link issues · Right-click for actions · ⌘0 fit · ? for shortcuts"
+/** The idle hint per mode. It names the gestures nothing else on screen advertises. */
+private fun idleHint(mode: CanvasMode): String = when (mode) {
+    CanvasMode.ARRANGE ->
+        "Arrange · Drag a card to move it · Drag empty to select · H to pan and link · ? shortcuts"
+    CanvasMode.INTERACT ->
+        "Pan and link · Drag anywhere to pan · Drag a card handle to link · V to arrange · ? shortcuts"
+}
+
+/** The two-icon segmented control. It is the only thing on screen that names the mode. */
+@Composable
+internal fun ModeToggle(state: GraphCanvasState, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .background(Swim.Card, RoundedCornerShape(6.dp))
+            .border(1.dp, Swim.Border, RoundedCornerShape(6.dp))
+            .padding(2.dp),
+    ) {
+        ModeButton("↖", "Arrange (V)", CanvasMode.ARRANGE, state)
+        ModeButton("✥", "Pan and link (H)", CanvasMode.INTERACT, state)
+    }
+}
+
+@Composable
+private fun ModeButton(
+    glyph: String,
+    label: String,
+    mode: CanvasMode,
+    state: GraphCanvasState,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val selected = state.mode == mode
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(26.dp)
+            .background(
+                if (selected) Swim.Focus else Color.Transparent,
+                RoundedCornerShape(4.dp),
+            )
+            .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .pointerInput(mode) { detectTapGestures { state.mode = mode } },
+    ) {
+        Text(glyph, color = if (selected) Swim.Text else Swim.TextMuted, fontSize = 14.sp)
+        if (hovered && !selected) {
+            Text(
+                text = label,
+                color = Swim.Text,
+                fontSize = 10.sp,
+                maxLines = 1,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(y = 28.dp)
+                    .wrapContentSize(unbounded = true, align = Alignment.TopStart)
+                    .background(Swim.Bg, RoundedCornerShape(4.dp))
+                    .border(1.dp, Swim.Border, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
+        }
+    }
+}
 
 /** The slim bar along the bottom of the canvas: what to do on the left, the zoom on the right. */
 @Composable
@@ -40,7 +108,7 @@ internal fun HintBar(
     val hint = when {
         state.pick != null -> "Click the target issue · Esc cancels"
         selectionCount > 0 -> "$selectionCount selected · Esc to clear"
-        else -> IDLE_HINT
+        else -> idleHint(state.mode)
     }
     Column(modifier.fillMaxWidth()) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(Swim.Border))
@@ -94,20 +162,26 @@ internal fun PickHint(modifier: Modifier = Modifier) {
     )
 }
 
+private val MODES = listOf(
+    "V, or the ↖ button" to "Arrange: drag cards, drag empty to select",
+    "H, or the ✥ button" to "Pan and link: drag to pan, handles on hover",
+)
+
 private val GESTURES = listOf(
-    "Left drag on empty canvas" to "Selection box",
-    "Right or middle drag" to "Pan",
-    "Space with left drag" to "Pan",
+    "Left drag, in Arrange" to "Move a card, or draw a selection box",
+    "Left drag, in Pan and link" to "Pan, over a card as well",
+    "Right or middle drag" to "Pan, in either mode",
+    "Space with left drag" to "Pan, in either mode",
     "Two-finger scroll" to "Pan both axes",
     "⌘ or ctrl with scroll" to "Zoom at the pointer",
     "Double click empty canvas" to "Zoom to fit",
-    "Click, ⇧ or ⌘ click" to "Select, add to the selection",
-    "Drag a card" to "Move it, and the selection with it",
-    "Drag a card handle" to "Draw a relation to another card",
+    "Click, ⇧ or ⌘ click" to "Select, toggle in the selection",
+    "Drag a card handle" to "Draw a relation, in Pan and link",
     "Right click" to "Menu for the card, the edge, or the canvas",
 )
 
 private val KEYS = listOf(
+    "V / H" to "Arrange, Pan and link",
     "?" to "This help",
     "Esc" to "Clear the selection, close menus",
     "+ / −" to "Zoom in, zoom out",
@@ -135,6 +209,7 @@ internal fun ShortcutsOverlay(onDismiss: () -> Unit) {
                 .padding(horizontal = 20.dp, vertical = 16.dp),
         ) {
             Text("Gestures and shortcuts", color = Swim.Text, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Section("Modes", MODES)
             Section("Pointer", GESTURES)
             Section("Keys", KEYS)
             Text("Press Esc or click to close.", color = Swim.Muted, fontSize = 10.sp)

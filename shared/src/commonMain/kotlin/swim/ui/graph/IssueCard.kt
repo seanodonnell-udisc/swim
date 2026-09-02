@@ -71,6 +71,9 @@ internal fun IssueCard(
     selected: Boolean,
     /** True while a relation drag is running from this card, which keeps its handles alive. */
     linking: Boolean,
+    mode: CanvasMode,
+    /** Reports the pointer resting on a handle, so an Interact pan leaves that drag alone. */
+    onOverHandle: (Boolean) -> Unit,
     prStatuses: Map<String, PrStatus>,
     users: List<UserSummary>,
     handlers: CardHandlers,
@@ -111,16 +114,23 @@ internal fun IssueCard(
                         onDoubleTap = { handlers.onOpen() },
                     )
                 }
-                .pointerInput(node.identifier) {
-                    detectDragGestures(
-                        onDragStart = { handlers.onDragStart() },
-                        onDragEnd = { handlers.onDragEnd() },
-                        onDragCancel = { handlers.onDragEnd() },
-                    ) { change, amount ->
-                        change.consume()
-                        handlers.onDrag(amount / density)
-                    }
-                }
+                .then(
+                    // Only Arrange moves cards. In Interact the canvas takes the drag and pans.
+                    if (mode == CanvasMode.ARRANGE) {
+                        Modifier.pointerInput(node.identifier) {
+                            detectDragGestures(
+                                onDragStart = { handlers.onDragStart() },
+                                onDragEnd = { handlers.onDragEnd() },
+                                onDragCancel = { handlers.onDragEnd() },
+                            ) { change, amount ->
+                                change.consume()
+                                handlers.onDrag(amount / density)
+                            }
+                        }
+                    } else {
+                        Modifier
+                    },
+                )
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -141,14 +151,16 @@ internal fun IssueCard(
             CardFooter(node, category, prStatuses, users, callbacks)
         }
 
-        // A drag that leaves the card takes the hover with it. Dropping the handle out of the
-        // composition then cancels the very gesture it started, so it stays while linking.
-        if (hovered || linking) {
+        // Arranging must not create relations by accident, so the handles are an Interact tool.
+        // A drag that leaves the card takes the hover with it, and dropping the handle out of the
+        // composition would cancel the very gesture it started, so it stays while linking.
+        if (mode == CanvasMode.INTERACT && (hovered || linking)) {
             LinkHandle(
                 side = LinkSide.BOTTOM,
                 color = Swim.Red,
                 density = density,
                 handlers = handlers,
+                onOverHandle = onOverHandle,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp),
             )
             LinkHandle(
@@ -156,6 +168,7 @@ internal fun IssueCard(
                 color = Swim.Muted,
                 density = density,
                 handlers = handlers,
+                onOverHandle = onOverHandle,
                 modifier = Modifier.align(Alignment.CenterStart).padding(start = 2.dp),
             )
             LinkHandle(
@@ -163,10 +176,11 @@ internal fun IssueCard(
                 color = Swim.Muted,
                 density = density,
                 handlers = handlers,
+                onOverHandle = onOverHandle,
                 modifier = Modifier.align(Alignment.CenterEnd).padding(end = 2.dp),
             )
-            if (hovered) CardTooltip(node.title, Modifier.align(Alignment.TopStart))
         }
+        if (hovered) CardTooltip(node.title, Modifier.align(Alignment.TopStart))
     }
 }
 
@@ -351,13 +365,18 @@ private fun LinkHandle(
     color: Color,
     density: Float,
     handlers: CardHandlers,
+    onOverHandle: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val over by interaction.collectIsHoveredAsState()
+    LaunchedEffect(over) { onOverHandle(over) }
     Box(
         modifier = modifier
             .size(11.dp)
             .background(color, CircleShape)
             .border(1.dp, Swim.Bg, CircleShape)
+            .hoverable(interaction)
             .pointerHoverIcon(PointerIcon.Crosshair)
             .pointerInput(side) {
                 detectDragGestures(
