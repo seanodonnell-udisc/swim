@@ -78,6 +78,9 @@ import swim.ui.graph.GraphCanvasCallbacks
 import swim.ui.graph.GraphCanvasDefaults
 import swim.ui.graph.Swim
 import swim.ui.graph.rememberGraphCanvasState
+import swim.ui.graph.slotOf
+import swim.ui.graph.stackIndex
+import swim.ui.graph.visibleStacks
 import swim.ui.theme.SwimDimens
 
 /** Set once the shortcuts overlay has been shown, so it only greets a new install. */
@@ -107,6 +110,7 @@ internal fun GraphScreen(
     val prStatusFailed by holder.session.prStatusFailed.collectAsState()
     val showRelated by holder.session.showRelatedEdges.collectAsState()
     val showDuplicates by holder.session.showDuplicates.collectAsState()
+    val derivePr by holder.session.derivePrRelations.collectAsState()
 
     var reference by remember { mutableStateOf(ReferenceData()) }
     var placement by remember { mutableStateOf(GraphPlacement()) }
@@ -223,7 +227,9 @@ internal fun GraphScreen(
     // Declared after the fit so it wins the frame they share.
     LaunchedEffect(placement, filterState.focusIssueId) {
         val id = filterState.focusIssueId ?: return@LaunchedEffect
-        val position = placement.positions[id] ?: return@LaunchedEffect
+        // A stacked issue has no position of its own; the pile it draws in holds one.
+        val position = placement.positions[slotOf(id, stackIndex(visibleStacks(projected)))]
+            ?: return@LaunchedEffect
         selection = setOf(id)
         canvasState.centerOn(
             Offset(
@@ -293,6 +299,9 @@ internal fun GraphScreen(
             onShowRelated = holder.session::setShowRelatedEdges,
             showDuplicates = showDuplicates,
             onShowDuplicates = holder.session::setShowDuplicates,
+            derivePr = derivePr,
+            onDerivePr = holder.session::setDerivePrRelations,
+            githubConnected = status.githubConfigured,
             showCrossLinks = showCrossLinks,
             onShowCrossLinks = { showCrossLinks = it },
             urlSource = filterState.urlSource,
@@ -502,6 +511,9 @@ private fun ViewToolbar(
     onShowRelated: (Boolean) -> Unit,
     showDuplicates: Boolean,
     onShowDuplicates: (Boolean) -> Unit,
+    derivePr: Boolean,
+    onDerivePr: (Boolean) -> Unit,
+    githubConnected: Boolean,
     showCrossLinks: Boolean,
     onShowCrossLinks: (Boolean) -> Unit,
     urlSource: String?,
@@ -543,6 +555,15 @@ private fun ViewToolbar(
         )
         SwimCheckbox("Related edges", showRelated, onShowRelated)
         SwimCheckbox("Duplicates", showDuplicates, onShowDuplicates)
+        // Without a GitHub token there are no pull requests to read, so the box says so instead
+        // of standing there ticked over a graph that can never carry a derived edge.
+        SwimCheckbox(
+            label = "Derive relations from PR stacks",
+            checked = derivePr && githubConnected,
+            onCheckedChange = onDerivePr,
+            enabled = githubConnected,
+            hint = if (githubConnected) null else "Connect GitHub to derive relations from PRs",
+        )
         // Only milestone areas hide their crossings, so only that mode offers the switch.
         if (groupBy == GraphGrouping.MILESTONE) {
             SwimCheckbox("Cross-milestone links", showCrossLinks, onShowCrossLinks)

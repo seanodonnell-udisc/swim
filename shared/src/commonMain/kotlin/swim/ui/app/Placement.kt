@@ -17,6 +17,10 @@ import swim.layout.reuseAndPlace
 import swim.ui.graph.EdgeKey
 import swim.ui.graph.GraphCanvasDefaults
 import swim.ui.graph.blocksEdgeKey
+import swim.ui.graph.slotOf
+import swim.ui.graph.stackIndex
+import swim.ui.graph.stackSpread
+import swim.ui.graph.visibleStacks
 
 /** The outline drawn behind one group of nodes. Canvas units are dp, as the canvas expects. */
 data class GroupBox(
@@ -39,6 +43,8 @@ data class GraphPlacement(
 /**
  * Where one area's own drag offset lives in the position snapshot. A Linear identifier is
  * `TEAM-123`, so it can never start with `@`, and the key cannot collide with an issue.
+ * [swim.ui.graph.STACK_PREFIX] reserves `@stack:` the same way for a pile of stacked cards; a
+ * pile is a real layout node, so its key stays in everything the layout cache reads.
  */
 internal const val GROUP_OFFSET_PREFIX = "@group:"
 
@@ -83,10 +89,12 @@ internal fun withoutCrossGroupEdges(graph: GraphData, groupBy: GraphGrouping): G
     )
 }
 
-/** The identifiers in one area. */
-internal fun idsIn(graph: GraphData, groupBy: GraphGrouping, group: String): Set<String> =
-    graph.nodes.filterTo(mutableSetOf()) { groupKeyOf(it, groupBy) == group }
-        .mapTo(mutableSetOf()) { it.identifier }
+/** The layout slots in one area: one per card, and one per pile of stacked cards. */
+internal fun idsIn(graph: GraphData, groupBy: GraphGrouping, group: String): Set<String> {
+    val index = stackIndex(visibleStacks(graph))
+    return graph.nodes.filter { groupKeyOf(it, groupBy) == group }
+        .mapTo(mutableSetOf()) { slotOf(it.identifier, index) }
+}
 
 /** Translates [ids] by [delta] and leaves every other node where it is. */
 internal fun moveGroup(
@@ -97,17 +105,43 @@ internal fun moveGroup(
     if (id in ids) Position(position.x + delta.x, position.y + delta.y) else position
 }
 
-/** Cards are a fixed size, so every node is the same box. */
-internal fun layoutNodesOf(graph: GraphData): List<LayoutNode> = graph.nodes.map {
-    LayoutNode(it.identifier, GraphCanvasDefaults.NodeWidth, GraphCanvasDefaults.NodeHeight)
+/**
+ * Cards are a fixed size, so every node is the same box. A pile of stacked cards is one box
+ * instead of one per member: it takes a single slot, grown by the diagonal offset it draws with.
+ */
+internal fun layoutNodesOf(graph: GraphData): List<LayoutNode> {
+    val index = stackIndex(visibleStacks(graph))
+    val taken = mutableSetOf<String>()
+    return graph.nodes.mapNotNull { node ->
+        val slot = slotOf(node.identifier, index)
+        if (!taken.add(slot)) return@mapNotNull null
+        val spread = index[node.identifier]?.let { stackSpread(it.size) } ?: 0f
+        LayoutNode(
+            slot,
+            GraphCanvasDefaults.NodeWidth + spread,
+            GraphCanvasDefaults.NodeHeight + spread,
+        )
+    }
 }
 
-/** Only `blocks` shapes the placement; `related` nudges sibling order; `duplicate` says nothing. */
-internal fun layoutEdgesOf(graph: GraphData): List<LayoutEdge> = graph.edges.mapNotNull { edge ->
-    when (edge.type) {
-        RelationType.BLOCKS -> LayoutEdge(edge.from, edge.to, LayoutEdgeKind.BLOCKS)
-        RelationType.RELATED -> LayoutEdge(edge.from, edge.to, LayoutEdgeKind.RELATED)
-        RelationType.DUPLICATE -> null
+/**
+ * Only `blocks` shapes the placement; `related` nudges sibling order; `duplicate` says nothing.
+ * Both ends run through the pile they belong to, so an edge onto one member pulls the whole pile.
+ * An edge between two members of one pile has nowhere to go and is dropped.
+ */
+internal fun layoutEdgesOf(graph: GraphData): List<LayoutEdge> {
+    val index = stackIndex(visibleStacks(graph))
+    val seen = mutableSetOf<LayoutEdge>()
+    return graph.edges.mapNotNull { edge ->
+        val kind = when (edge.type) {
+            RelationType.BLOCKS -> LayoutEdgeKind.BLOCKS
+            RelationType.RELATED -> LayoutEdgeKind.RELATED
+            RelationType.DUPLICATE -> return@mapNotNull null
+        }
+        val from = slotOf(edge.from, index)
+        val to = slotOf(edge.to, index)
+        if (from == to) return@mapNotNull null
+        LayoutEdge(from, to, kind).takeIf(seen::add)
     }
 }
 
@@ -240,16 +274,21 @@ internal fun groupBoxesOf(
     positions: Map<String, Position>,
 ): List<GroupBox> {
     if (groupBy == GraphGrouping.NONE) return emptyList()
-    val members = LinkedHashMap<String, MutableList<Position>>()
+    val index = stackIndex(visibleStacks(graph))
+    // Position and how far past it the slot reaches: a pile is wider and taller than one card.
+    val members = LinkedHashMap<String, MutableList<Pair<Position, Float>>>()
     for (node in graph.nodes) {
-        val position = positions[node.identifier] ?: continue
-        members.getOrPut(groupKeyOf(node, groupBy)) { mutableListOf() }.add(position)
+        val position = positions[slotOf(node.identifier, index)] ?: continue
+        val spread = index[node.identifier]?.let { stackSpread(it.size) } ?: 0f
+        members.getOrPut(groupKeyOf(node, groupBy)) { mutableListOf() }.add(position to spread)
     }
     return members.entries.sortedWith(GROUP_ORDER).map { (label, group) ->
-        val left = group.minOf { it.x } - GROUP_MARGIN
-        val top = group.minOf { it.y } - GROUP_LABEL_BAND
-        val right = group.maxOf { it.x } + GraphCanvasDefaults.NodeWidth + GROUP_MARGIN
-        val bottom = group.maxOf { it.y } + GraphCanvasDefaults.NodeHeight + GROUP_MARGIN
+        val left = group.minOf { it.first.x } - GROUP_MARGIN
+        val top = group.minOf { it.first.y } - GROUP_LABEL_BAND
+        val right = group.maxOf { it.first.x + it.second } +
+            GraphCanvasDefaults.NodeWidth + GROUP_MARGIN
+        val bottom = group.maxOf { it.first.y + it.second } +
+            GraphCanvasDefaults.NodeHeight + GROUP_MARGIN
         GroupBox(label, left, top, right - left, bottom - top)
     }
 }

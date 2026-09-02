@@ -157,13 +157,99 @@ class GraphCanvasLogicTest {
 
     @Test
     fun contentBoundsCoverEveryCard() {
-        val rects = GraphCanvasPreview.positions.values.map { nodeRect(it) }
+        // Every card, fanned out of its slot: the pile's three cards reach past its own position.
+        val stacks = visibleStacks(GraphCanvasPreview.graph)
+        val index = stackIndex(stacks)
+        val rects = GraphCanvasPreview.graph.nodes.mapNotNull {
+            cardPosition(it.identifier, GraphCanvasPreview.positions, index, emptyMap())
+        }.map(::nodeRect)
         val bounds = contentBoundsOf(rects)!!
         assertEquals(60f, bounds.left)
         assertEquals(40f, bounds.top)
         assertEquals(740f + GraphCanvasDefaults.NodeWidth, bounds.right)
-        assertEquals(580f + GraphCanvasDefaults.NodeHeight, bounds.bottom)
+        // The pile sits at y 760 and its front card is two 14dp steps below that.
+        assertEquals(760f + 2 * STACK_OFFSET + GraphCanvasDefaults.NodeHeight, bounds.bottom)
         assertNull(contentBoundsOf(emptyList()))
+    }
+
+    @Test
+    fun aPileOrdersByIdentifierAndFansOutFromItsOwnPosition() {
+        val members = setOf("ENG-113", "ENG-111", "ENG-112")
+        assertEquals(listOf("ENG-111", "ENG-112", "ENG-113"), pileOrder(members, null))
+        // The front card is the whole card, and every one behind it peeks out at the top left.
+        assertEquals(2 * STACK_OFFSET, pileOffset(0, 3))
+        assertEquals(0f, pileOffset(2, 3))
+        assertEquals(2 * STACK_OFFSET, stackSpread(3))
+
+        val index = stackIndex(listOf(members))
+        val positions = mapOf("${STACK_PREFIX}ENG-111" to Position(100f, 200f))
+        assertEquals(Position(128f, 228f), cardPosition("ENG-111", positions, index, emptyMap()))
+        assertEquals(Position(100f, 200f), cardPosition("ENG-113", positions, index, emptyMap()))
+    }
+
+    @Test
+    fun bringingARearCardForwardOnlyMovesThatPile() {
+        val members = setOf("ENG-111", "ENG-112", "ENG-113")
+        val front = mapOf("${STACK_PREFIX}ENG-111" to "ENG-113")
+        assertEquals(listOf("ENG-113", "ENG-111", "ENG-112"), pileOrder(members, front.getValue("${STACK_PREFIX}ENG-111")))
+
+        // Draw order is back to front, so the card in front is placed last and lands on top.
+        val ids = listOf("ENG-101", "ENG-111", "ENG-112", "ENG-113", "ENG-102")
+        assertEquals(
+            listOf("ENG-101", "ENG-112", "ENG-111", "ENG-113", "ENG-102"),
+            drawOrder(ids, listOf(members), front),
+        )
+        assertEquals(ids, drawOrder(ids, emptyList(), emptyMap()))
+    }
+
+    @Test
+    fun aStackWithOnlyOneMemberLeftIsNotAPile() {
+        val graph = GraphCanvasPreview.graph
+        assertEquals(listOf(setOf("ENG-111", "ENG-112", "ENG-113")), visibleStacks(graph))
+        // Hiding duplicates can drop members. One card is a card, not a pile.
+        val thinned = graph.copy(nodes = graph.nodes.filter { it.identifier != "ENG-112" })
+        assertEquals(
+            listOf(setOf("ENG-111", "ENG-113")),
+            visibleStacks(thinned),
+        )
+        val alone = graph.copy(
+            nodes = graph.nodes.filter { it.identifier != "ENG-112" && it.identifier != "ENG-113" },
+        )
+        assertEquals(emptyList(), visibleStacks(alone))
+    }
+
+    @Test
+    fun aDerivedEdgeReadsOutTheBranchAndAlwaysCarriesTheCaution() {
+        val nodes = GraphCanvasPreview.graph.nodes.associateBy { it.identifier }
+        val key = EdgeKey("ENG-106", "ENG-111", RelationType.BLOCKS)
+        assertTrue(GraphCanvasPreview.graph.isDerived(key), "the preview lost its derived edge")
+
+        val lines = derivedEdgeLines(key, nodes, GraphCanvasPreview.prStatuses)
+        assertEquals(
+            "ENG-111's PR targets ENG-106's branch `eng-106-chooser`.",
+            lines[0],
+        )
+        assertEquals(DERIVED_CAUTION, lines[1])
+        // Nothing in the caution offers to do the rebase for the user.
+        assertTrue(
+            "rebase" !in DERIVED_CAUTION.lowercase(),
+            "the caution offers a rebase: $DERIVED_CAUTION",
+        )
+
+        // GitHub reported no branch names: the pull request numbers say the same thing.
+        val numbers = derivedEdgeLines(key, nodes, emptyMap())
+        assertEquals("PR #420 targets the branch of PR #419.", numbers[0])
+        assertEquals(DERIVED_CAUTION, numbers[1])
+    }
+
+    @Test
+    fun onlyADerivedEdgeReadsAsDerived() {
+        assertTrue(
+            !GraphCanvasPreview.graph.isDerived(
+                EdgeKey("ENG-101", "ENG-103", RelationType.BLOCKS),
+            ),
+            "a Linear edge was read as derived",
+        )
     }
 
     @Test

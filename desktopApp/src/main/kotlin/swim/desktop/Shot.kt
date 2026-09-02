@@ -24,6 +24,10 @@ import swim.ui.app.AppCommand
 import swim.ui.app.AppCommands
 import swim.ui.app.SwimApp
 import swim.ui.app.SwimEnv
+import swim.ui.graph.GraphCanvas
+import swim.ui.graph.GraphCanvasPreview
+import swim.ui.graph.GraphCanvasState
+import swim.ui.graph.rememberGraphCanvasState
 import java.io.File
 
 /**
@@ -106,6 +110,23 @@ fun main(args: Array<String>) {
     shoot(outDir, "p3b-shot-grouped.png", 60, graphEnv())
     savedFilters?.let { Settings().putString(FILTERS, it) }
 
+    // The live graph, re-laid out. A workspace that has been dragged around for weeks fits at
+    // 10%, which says nothing about whether a pile drew; a fresh layout is readable.
+    val relayout = AppCommands()
+    shoot(
+        outDir, "p3f-shot-live.png", 90, graphEnv(relayout),
+        atFrame = 50 to { _ -> relayout.send(AppCommand.RELAYOUT) },
+    )
+
+    // The pile of stacked cards and the PR-derived edge, off the preview graph. The live
+    // workspace has no stacked pull requests, so this is the only place they can be reviewed.
+    shootCanvas(outDir, "p3f-shot-stack.png") { scene, state ->
+        scene.move(state.toScreen(STACK_BADGE))
+    }
+    shootCanvas(outDir, "p3f-shot-derived-edge.png") { scene, state ->
+        scene.click(state.toScreen(DERIVED_EDGE))
+    }
+
     // Last, because it is the only one that wants the flag clear.
     Settings().remove(SEEN_SHORTCUTS)
     shoot(outDir, "p3d-shot-shortcuts.png", 60, graphEnv())
@@ -113,6 +134,50 @@ fun main(args: Array<String>) {
 
     Log.line("shots written to ${outDir.absolutePath}")
     kotlin.system.exitProcess(0)
+}
+
+/**
+ * The canvas on its own, against the hand-built preview graph. The live workspace has no stacked
+ * pull requests, so the pile and the derived edge can only be reviewed here. [stage] gets the
+ * canvas state, so a point can be named in canvas units instead of guessed in pixels.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun shootCanvas(
+    outDir: File,
+    name: String,
+    stage: (ImageComposeScene, GraphCanvasState) -> Unit,
+) {
+    lateinit var state: GraphCanvasState
+    val scene = ImageComposeScene(width = WIDTH, height = HEIGHT, density = Density(1f)) {
+        state = rememberGraphCanvasState()
+        GraphCanvas(
+            graph = GraphCanvasPreview.graph,
+            positions = GraphCanvasPreview.positions,
+            readySet = GraphCanvasPreview.readySet,
+            prStatuses = GraphCanvasPreview.prStatuses,
+            users = GraphCanvasPreview.users,
+            crossLinks = GraphCanvasPreview.crossLinks,
+            cycleEdges = GraphCanvasPreview.cycleEdges,
+            state = state,
+        )
+    }
+    try {
+        // The first frame sizes the viewport; the second lands the fit it arms.
+        repeat(3) { scene.render() }
+        stage(scene, state)
+        // The canvas offers a double tap, so `detectTapGestures` holds a plain tap back until
+        // the double-tap window closes. That window is real time, and the scene only runs its
+        // dispatcher while it renders, so a staged click needs paced frames after it.
+        var image = scene.render()
+        repeat(3) {
+            Thread.sleep(FRAME_PAUSE_MS)
+            image = scene.render()
+        }
+        File(outDir, name).writeBytes(requireNotNull(image.encodeToData()).bytes)
+        Log.line("wrote $name")
+    } finally {
+        scene.close()
+    }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -146,6 +211,13 @@ private fun shoot(
  */
 private val FIRST_CARD = Offset(108f, 176f)
 private val PICK_TARGET = Offset(560f, 460f)
+
+/**
+ * Canvas units, not pixels: the two points on the preview graph worth staging. The badge sits
+ * just off the front card of the pile; the derived edge runs straight down from ENG-106.
+ */
+private val STACK_BADGE = Offset(370f, 795f)
+private val DERIVED_EDGE = Offset(195f, 600f)
 private const val ADD_RELATION = 3
 private const val MENU_WIDTH = 184f
 private const val MENU_ROW = 22f

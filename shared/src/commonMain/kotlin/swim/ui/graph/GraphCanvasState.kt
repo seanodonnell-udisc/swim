@@ -69,6 +69,18 @@ class GraphCanvasState internal constructor() {
     internal var dragDelta by mutableStateOf(Offset.Zero)
 
     /**
+     * The card each pile shows in front, by pile key, once the user has clicked a rear one. Only
+     * the piles the user has reordered are named; the rest lead with their lowest identifier.
+     * This is a view of the canvas, not of the graph, so it is never persisted.
+     */
+    internal var stackFront by mutableStateOf<Map<String, String>>(emptyMap())
+
+    /** Puts [id] at the front of its pile. */
+    internal fun bringToFront(key: String, id: String) {
+        stackFront = stackFront + (key to id)
+    }
+
+    /**
      * Where the pointer is, in screen pixels, or null before it has entered. Only the draw
      * lambdas read it, so a move redraws the edges and never recomposes a card.
      */

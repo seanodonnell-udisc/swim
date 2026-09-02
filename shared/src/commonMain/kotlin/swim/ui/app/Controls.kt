@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -272,24 +274,66 @@ internal fun SwimTextField(
 
 private val MaskedText = androidx.compose.ui.text.input.PasswordVisualTransformation('•')
 
-/** A checkbox drawn as a glyph, so it matches the 11sp chrome. */
+/**
+ * A checkbox drawn as a glyph, so it matches the 11sp chrome. A disabled box takes no click and
+ * says why in [hint] on hover.
+ */
 @Composable
 internal fun SwimCheckbox(
     label: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    hint: String? = null,
 ) {
-    Row(
-        modifier = modifier
-            .heightIn(min = ControlHeight)
-            .clickable { onCheckedChange(!checked) }
-            .padding(horizontal = 6.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-        Text(if (checked) "☑" else "☐", color = if (checked) Swim.Accent else Swim.Muted, fontSize = 12.sp)
-        Text(label, color = if (checked) Swim.Text else Swim.TextMuted, fontSize = 11.sp, maxLines = 1)
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Box(modifier = modifier) {
+        Row(
+            modifier = Modifier
+                .heightIn(min = ControlHeight)
+                .hoverable(interaction)
+                .clickable(enabled = enabled) { onCheckedChange(!checked) }
+                .padding(horizontal = 6.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                text = if (checked) "☑" else "☐",
+                color = when {
+                    !enabled -> Swim.Border
+                    checked -> Swim.Accent
+                    else -> Swim.Muted
+                },
+                fontSize = 12.sp,
+            )
+            Text(
+                text = label,
+                color = when {
+                    !enabled -> Swim.Muted
+                    checked -> Swim.Text
+                    else -> Swim.TextMuted
+                },
+                fontSize = 11.sp,
+                maxLines = 1,
+            )
+        }
+        if (hovered && hint != null) {
+            Text(
+                text = hint,
+                color = Swim.Text,
+                fontSize = 10.sp,
+                maxLines = 2,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .offset(y = 26.dp)
+                    .wrapContentSize(unbounded = true, align = Alignment.TopStart)
+                    .background(Swim.Bg, ControlShape)
+                    .border(1.dp, Swim.Border, ControlShape)
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
+        }
     }
 }
 

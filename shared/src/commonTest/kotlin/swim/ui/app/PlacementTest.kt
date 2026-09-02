@@ -7,9 +7,13 @@ import swim.core.model.RelationType
 import swim.core.model.WorkflowStateType
 import swim.core.session.GraphGrouping
 import androidx.compose.ui.geometry.Offset
+import swim.layout.LayoutEdge
+import swim.layout.LayoutEdgeKind
 import swim.layout.Position
 import swim.layout.PositionSnapshot
 import swim.ui.graph.GraphCanvasDefaults
+import swim.ui.graph.STACK_OFFSET
+import swim.ui.graph.STACK_PREFIX
 import swim.ui.graph.blocksEdgeKey
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -283,6 +287,55 @@ class PlacementTest {
         assertEquals(100f - GROUP_MARGIN, box.x)
         assertEquals(200f - GROUP_LABEL_BAND, box.y)
         assertEquals(GraphCanvasDefaults.NodeWidth + GROUP_MARGIN * 2f, box.width)
+    }
+
+    @Test
+    fun aPileOfStackedCardsTakesOneLayoutSlot() {
+        val graph = GraphData(
+            nodes = listOf(node("A"), node("B"), node("C"), node("D")),
+            edges = listOf(blocks("A", "B"), blocks("A", "C"), blocks("B", "C")),
+            stacks = listOf(setOf("B", "C")),
+        )
+        val nodes = layoutNodesOf(graph)
+        assertEquals(listOf("A", "${STACK_PREFIX}B", "D"), nodes.map { it.id })
+        val pile = nodes.single { it.id == "${STACK_PREFIX}B" }
+        assertEquals(GraphCanvasDefaults.NodeWidth + STACK_OFFSET, pile.width)
+        assertEquals(GraphCanvasDefaults.NodeHeight + STACK_OFFSET, pile.height)
+
+        // A → B and A → C are the same edge once both ends run through the pile, and B → C is
+        // inside it and goes nowhere.
+        assertEquals(
+            listOf(LayoutEdge("A", "${STACK_PREFIX}B", LayoutEdgeKind.BLOCKS)),
+            layoutEdgesOf(graph),
+        )
+
+        // One position for the pile, and the placement puts it below its blocker.
+        val placed = placeGraph(graph, GraphGrouping.NONE, "k", PositionSnapshot())
+        assertTrue("B" !in placed.positions, "a stacked member got a position of its own")
+        assertTrue(
+            placed.positions.getValue("${STACK_PREFIX}B").y > placed.positions.getValue("A").y,
+            "the pile was not placed below its blocker",
+        )
+    }
+
+    @Test
+    fun aGroupBoxHoldsTheWholePile() {
+        val graph = GraphData(
+            nodes = listOf(node("A", team = "ENG"), node("B", team = "ENG")),
+            edges = emptyList(),
+            stacks = listOf(setOf("A", "B")),
+        )
+        val box = groupBoxesOf(
+            graph,
+            GraphGrouping.TEAM,
+            mapOf("${STACK_PREFIX}A" to Position(100f, 200f)),
+        ).single()
+        assertEquals(
+            GraphCanvasDefaults.NodeWidth + STACK_OFFSET + GROUP_MARGIN * 2f,
+            box.width,
+        )
+        // And an area drag moves the pile, which the group knows only by its slot.
+        assertEquals(setOf("${STACK_PREFIX}A"), idsIn(graph, GraphGrouping.TEAM, "ENG"))
     }
 
     @Test

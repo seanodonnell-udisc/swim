@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import swim.core.model.EdgeProvenance
 import swim.core.model.GraphData
 import swim.core.model.IssueNode
 import swim.core.model.PrStatus
@@ -131,14 +132,31 @@ fun GraphCanvas(
     underlay: @Composable () -> Unit = {},
 ) {
     val density = LocalDensity.current.density
-    val nodes = remember(graph) { graph.nodes.associateBy { it.identifier } }
-    val ids = remember(graph) { graph.nodes.map { it.identifier } }
+    val stacks = remember(graph) { visibleStacks(graph) }
+    val stackOf = remember(stacks) { stackIndex(stacks) }
+    // Two cards of one pile sit on top of each other, so the edge between them has nothing to
+    // draw. Dropping it here keeps the hit test and the draw on the same set of edges.
+    val drawn = remember(graph, stackOf) {
+        if (stackOf.isEmpty()) {
+            graph
+        } else {
+            graph.copy(
+                edges = graph.edges.filterNot {
+                    stackOf[it.from] != null && stackOf[it.from] == stackOf[it.to]
+                },
+            )
+        }
+    }
+    val nodes = remember(drawn) { drawn.nodes.associateBy { it.identifier } }
+    val ids = remember(drawn, stacks, state.stackFront) {
+        drawOrder(drawn.nodes.map { it.identifier }, stacks, state.stackFront)
+    }
     val focus = remember { FocusRequester() }
 
     // Only the source id, so a link-drag frame does not recompose every card.
     val linkingFrom by remember(state) { derivedStateOf { state.link?.from } }
 
-    val rects = buildRects(positions, ids, state.dragIds, state.dragDelta)
+    val rects = buildRects(positions, ids, stackOf, state.stackFront, state.dragIds, state.dragDelta)
     val bounds = contentBoundsOf(rects.values)
     SideEffect {
         state.density = density
@@ -172,17 +190,19 @@ fun GraphCanvas(
                 }
             )
             .modifierTracking(state)
-            .secondaryGesture(state) { at -> state.menu = menuAt(at, state, rects, graph) }
+            .secondaryGesture(state) { at -> state.menu = menuAt(at, state, rects, drawn) }
             .pickTarget(state, rects, callbacks)
             .interactPan(state)
             .scrollAndZoom(state)
             // canvasTaps must come first. Its tap detector consumes the down, and the later a
             // pointer modifier is declared the earlier it sees the Main pass, so the other way
             // round the selection box never got an unconsumed down to start from.
-            .canvasTaps(state, rects, graph, callbacks)
+            .canvasTaps(state, rects, drawn, callbacks)
             .panAndBoxSelect(state) { box ->
+                // A marquee that touches one card of a pile takes the whole pile: the pile is
+                // one unit on the canvas, and half a pile cannot be dragged anywhere useful.
                 callbacks.onSelectionChange(
-                    rects.filterValues { it.overlaps(box) }.keys +
+                    withStackMates(rects.filterValues { it.overlaps(box) }.keys, stackOf) +
                         if (state.additive) selection else emptySet(),
                 )
             },
@@ -204,7 +224,7 @@ fun GraphCanvas(
                 scale(density, pivot = Offset.Zero) {
                     // The pointer is read here, not in the composition, so a mouse move redraws
                     // the edges and never recomposes a card.
-                    drawEdges(graph, rects, hoveredEdge(state, graph, rects))
+                    drawEdges(drawn, rects, hoveredEdge(state, drawn, rects))
                     // Both of these are affordances, not graph content, so they keep the same
                     // weight on screen at every zoom.
                     val zoom = state.scale
@@ -232,8 +252,10 @@ fun GraphCanvas(
                                 onOverHandle = { state.overHandle = it },
                                 prStatuses = prStatuses,
                                 users = users,
-                                handlers = remember(id, selection, positions, callbacks) {
-                                    cardHandlers(id, state, selection, positions, callbacks)
+                                handlers = remember(id, selection, positions, ids, stackOf, callbacks) {
+                                    cardHandlers(
+                                        id, state, selection, positions, ids, stackOf, callbacks,
+                                    )
                                 },
                                 callbacks = callbacks,
                             )
@@ -249,6 +271,15 @@ fun GraphCanvas(
                             (rect.left * density).roundToInt(),
                             (rect.top * density).roundToInt(),
                         )
+                    }
+                }
+            }
+            // Over the cards, so the count on a pile is never buried by the card in front of it.
+            if (stacks.isNotEmpty()) {
+                Box(Modifier.fillMaxSize()) {
+                    stacks.forEach { members ->
+                        val front = pileOrder(members, state.stackFront[stackKeyOf(members)]).first()
+                        rects[front]?.let { key(front) { StackBadge(members, it, density) } }
                     }
                 }
             }
@@ -275,29 +306,59 @@ fun GraphCanvas(
         HintBar(state, selection.size, Modifier.align(Alignment.BottomCenter))
         if (state.pick != null) PickHint(Modifier.align(Alignment.TopCenter))
 
-        state.panel?.let { panel -> RelationChooser(panel, state, callbacks) }
+        // A PR-derived edge has no Linear relation behind it, so both surfaces that would offer
+        // to change or delete one show what derived it instead.
+        state.panel?.let { panel ->
+            val derived = (panel as? CanvasPanel.Edit)?.edge?.takeIf { drawn.isDerived(it) }
+            if (derived == null) {
+                RelationChooser(panel, state, callbacks)
+            } else {
+                DerivedEdgePanel(
+                    lines = derivedEdgeLines(derived, nodes, prStatuses),
+                    at = panel.at,
+                    viewport = state.viewport,
+                    density = density,
+                )
+            }
+        }
         state.menu?.let { menu ->
-            ContextMenuSurface(
-                menu = menu,
-                entries = menuEntries(menu, graph, nodes, users, ids, state, callbacks),
-                viewportHeight = Dp(state.viewport.height / density),
-                viewportWidth = Dp(state.viewport.width / density),
-                density = density,
-                onDismiss = { state.menu = null },
-            )
+            val derived = (menu as? CanvasMenu.Edge)?.edge?.takeIf { drawn.isDerived(it) }
+            if (derived == null) {
+                ContextMenuSurface(
+                    menu = menu,
+                    entries = menuEntries(menu, drawn, nodes, users, ids, state, callbacks),
+                    viewportHeight = Dp(state.viewport.height / density),
+                    viewportWidth = Dp(state.viewport.width / density),
+                    density = density,
+                    onDismiss = { state.menu = null },
+                )
+            } else {
+                DerivedEdgePanel(
+                    lines = derivedEdgeLines(derived, nodes, prStatuses),
+                    at = menu.at,
+                    viewport = state.viewport,
+                    density = density,
+                )
+            }
         }
         if (state.shortcutsVisible) ShortcutsOverlay { state.shortcutsVisible = false }
     }
 }
 
+/**
+ * Where every card sits. [positions] is keyed by layout slot, so one pile has one entry and
+ * [cardPosition] fans it out into one rectangle per member, each offset from the card behind it.
+ */
 private fun buildRects(
     positions: Map<String, Position>,
     ids: List<String>,
+    stackOf: Map<String, Set<String>>,
+    front: Map<String, String>,
     dragIds: Set<String>,
     dragDelta: Offset,
 ): Map<String, Rect> = ids.mapNotNull { id ->
-    val position = positions[id] ?: return@mapNotNull null
-    val shifted = if (id in dragIds) {
+    val position = cardPosition(id, positions, stackOf, front) ?: return@mapNotNull null
+    val shifted = if (slotOf(id, stackOf) in dragIds) {
         Position(position.x + dragDelta.x, position.y + dragDelta.y)
     } else {
         position
@@ -338,60 +399,84 @@ private fun cardHandlers(
     state: GraphCanvasState,
     selection: Set<String>,
     positions: Map<String, Position>,
+    cards: List<String>,
+    stackOf: Map<String, Set<String>>,
     callbacks: GraphCanvasCallbacks,
-) = CardHandlers(
-    onSelect = {
-        state.dismissPanels()
-        callbacks.onSelectionChange(
-            when {
-                !state.additive -> setOf(id)
-                id in selection -> selection - id
-                else -> selection + id
+): CardHandlers {
+    val mates = stackOf[id]
+    val self = if (mates == null) setOf(id) else mates
+    return CardHandlers(
+        onSelect = {
+            state.dismissPanels()
+            // Only the sliver of a rear card is clickable, and the click that reaches it means
+            // "let me at this one", not "act on the pile".
+            if (mates != null) {
+                val key = stackKeyOf(mates)
+                if (pileOrder(mates, state.stackFront[key]).first() != id) {
+                    state.bringToFront(key, id)
+                }
             }
-        )
-    },
-    onOpen = { callbacks.onOpenIssue(id) },
-    onDragStart = {
-        state.dismissPanels()
-        state.dragIds = if (id in selection) selection else setOf(id)
-        state.dragDelta = Offset.Zero
-    },
-    onDrag = { delta -> state.dragDelta += delta },
-    onDragEnd = {
-        val moved = state.dragIds.mapNotNull { moving ->
-            val position = positions[moving] ?: return@mapNotNull null
-            moving to Position(
-                position.x + state.dragDelta.x,
-                position.y + state.dragDelta.y,
+            callbacks.onSelectionChange(
+                when {
+                    !state.additive -> self
+                    id in selection -> selection - self
+                    else -> selection + self
+                }
             )
-        }.toMap()
-        state.dragIds = emptySet()
-        state.dragDelta = Offset.Zero
-        if (moved.isNotEmpty()) callbacks.onNodesMoved(moved)
-    },
-    onLinkStart = { side ->
-        state.dismissPanels()
-        val start = positions[id] ?: return@CardHandlers
-        val rect = nodeRect(start)
-        state.link = when (side) {
-            LinkSide.BOTTOM -> LinkDrag(id, Offset(rect.center.x, rect.bottom), RelationType.BLOCKS)
-            LinkSide.LEFT -> LinkDrag(id, Offset(rect.left, rect.center.y), RelationType.RELATED)
-            LinkSide.RIGHT -> LinkDrag(id, Offset(rect.right, rect.center.y), RelationType.RELATED)
-        }
-    },
-    onLink = { delta -> state.link?.let { state.link = it.copy(at = it.at + delta) } },
-    onLinkEnd = {
-        val drag = state.link
-        state.link = null
-        if (drag == null) return@CardHandlers
-        val target = positions.entries.firstOrNull { (other, position) ->
-            other != drag.from && nodeRect(position).contains(drag.at)
-        }?.key
-        if (target != null) {
-            state.panel = CanvasPanel.Create(drag.from, target, state.toScreen(drag.at))
-        }
-    },
-)
+        },
+        onOpen = { callbacks.onOpenIssue(id) },
+        onDragStart = {
+            state.dismissPanels()
+            // Slots, not identifiers: a pile moves as the one box the layout placed.
+            val moving = if (id in selection) selection else self
+            state.dragIds = moving.mapTo(mutableSetOf()) { slotOf(it, stackOf) }
+            state.dragDelta = Offset.Zero
+        },
+        onDrag = { delta -> state.dragDelta += delta },
+        onDragEnd = {
+            val moved = state.dragIds.mapNotNull { moving ->
+                val position = positions[moving] ?: return@mapNotNull null
+                moving to Position(
+                    position.x + state.dragDelta.x,
+                    position.y + state.dragDelta.y,
+                )
+            }.toMap()
+            state.dragIds = emptySet()
+            state.dragDelta = Offset.Zero
+            if (moved.isNotEmpty()) callbacks.onNodesMoved(moved)
+        },
+        onLinkStart = { side ->
+            state.dismissPanels()
+            val start = cardPosition(id, positions, stackOf, state.stackFront)
+                ?: return@CardHandlers
+            val rect = nodeRect(start)
+            state.link = when (side) {
+                LinkSide.BOTTOM ->
+                    LinkDrag(id, Offset(rect.center.x, rect.bottom), RelationType.BLOCKS)
+                LinkSide.LEFT ->
+                    LinkDrag(id, Offset(rect.left, rect.center.y), RelationType.RELATED)
+                LinkSide.RIGHT ->
+                    LinkDrag(id, Offset(rect.right, rect.center.y), RelationType.RELATED)
+            }
+        },
+        onLink = { delta -> state.link?.let { state.link = it.copy(at = it.at + delta) } },
+        onLinkEnd = {
+            val drag = state.link
+            state.link = null
+            if (drag == null) return@CardHandlers
+            // Every card, not every slot, and last first: [cards] is in draw order, so a drop
+            // on a pile names the card the user can actually see there.
+            val target = cards.lastOrNull { other ->
+                other != drag.from &&
+                    cardPosition(other, positions, stackOf, state.stackFront)
+                        ?.let { nodeRect(it).contains(drag.at) } == true
+            }
+            if (target != null) {
+                state.panel = CanvasPanel.Create(drag.from, target, state.toScreen(drag.at))
+            }
+        },
+    )
+}
 
 private fun handleKey(
     event: KeyEvent,
@@ -683,6 +768,9 @@ internal fun hitEdge(
     return best
 }
 
+/** How far a PR-derived edge is held back from a Linear one. No dashes: the owner said so. */
+internal const val DERIVED_ALPHA = 0.55f
+
 internal fun edgeColor(type: RelationType): Color = when (type) {
     RelationType.BLOCKS -> Swim.Red
     RelationType.RELATED -> Swim.Muted
@@ -711,7 +799,11 @@ private fun DrawScope.drawEdges(
             target = ends.target,
             targetPosition = ends.targetPosition,
         )
-        val base = edgeColor(edge.type)
+        // A derived edge is the same solid red family, held back. It is a reading of the pull
+        // requests, not a relation somebody wrote down, and it must say so at a glance.
+        val base = edgeColor(edge.type).let {
+            if (edge.provenance == EdgeProvenance.PR_DERIVED) it.copy(alpha = DERIVED_ALPHA) else it
+        }
         // A hovered edge reads brighter and thicker, so a click on it feels aimable.
         val color = if (hover) lerp(base, Color.White, 0.45f) else base
         val width = (if (edge.type == RelationType.BLOCKS) 2f else 1f) + if (hover) 2f else 0f

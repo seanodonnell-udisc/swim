@@ -326,7 +326,11 @@ class CanvasInteractionTest {
     fun aSelectionDragMovesEveryChosenCardByTheSameDelta() {
         rightClick(Offset(1150f, 620f))
         click(menuRow(Offset(1150f, 620f), 3))
-        assertEquals(GraphCanvasPreview.positions.keys, selection, "Select All did not select all")
+        assertEquals(
+            GraphCanvasPreview.graph.nodes.mapTo(mutableSetOf()) { it.identifier },
+            selection,
+            "Select All did not select all",
+        )
 
         val before = positions
         dragBy(cardCentre("ENG-101"), Offset(70f, 45f))
@@ -411,6 +415,85 @@ class CanvasInteractionTest {
         assertEquals(1f, state.scale)
     }
 
+    // -- PR-derived edges and stacked cards -----------------------------------------------------
+
+    @Test
+    fun aDerivedEdgeOffersWhatDerivedItAndNothingToPress() {
+        // ENG-106 blocks ENG-111 because ENG-111's PR starts from ENG-106's branch. The straight
+        // run below ENG-106 belongs to that edge alone.
+        val at = state.toScreen(Offset(195f, 600f))
+        tapCanvas(at)
+        assertEquals(
+            CanvasPanel.Edit(EdgeKey("ENG-106", "ENG-111", RelationType.BLOCKS), at),
+            state.panel,
+        )
+        write("canvas-derived-edge.png")
+
+        // A Linear edge puts three "change to" rows here and Remove on the last. The info panel
+        // has no rows at all, so none of those four points may mutate anything.
+        repeat(4) { row -> tapCanvas(menuRow(at, row)) }
+        assertNoMutation()
+
+        // Same on the right-click menu.
+        state.dismissPanels()
+        rightClick(at)
+        assertEquals(
+            CanvasMenu.Edge(EdgeKey("ENG-106", "ENG-111", RelationType.BLOCKS), at),
+            state.menu,
+        )
+        repeat(4) { row -> tapCanvas(menuRow(at, row)) }
+        assertNoMutation()
+    }
+
+    private fun assertNoMutation() = assertTrue(
+        log.none { it.startsWith("change") || it.startsWith("remove") },
+        "a PR-derived edge offered a mutation: $log",
+    )
+
+    @Test
+    fun clickingAPeekingCardBringsItToTheFrontOfThePile() {
+        // The pile sits at (60, 760). Only the left strip of the rear card is not covered.
+        val peeking = state.toScreen(Offset(66f, 800f))
+        assertTrue(state.stackFront.isEmpty(), "a fresh canvas already reordered a pile")
+
+        tapCanvas(peeking)
+        assertEquals(mapOf("${STACK_PREFIX}ENG-111" to "ENG-113"), state.stackFront)
+        assertEquals(
+            setOf("ENG-111", "ENG-112", "ENG-113"),
+            selection,
+            "the pile did not select as one",
+        )
+        write("canvas-stack-front.png")
+
+        // The same point now belongs to a different card, which is the pile really reordering:
+        // ENG-113 moved to the front and ENG-112 fell to the back.
+        tapCanvas(peeking)
+        assertEquals("ENG-112", state.stackFront.getValue("${STACK_PREFIX}ENG-111"))
+    }
+
+    @Test
+    fun aPileDragsAsOneSlot() {
+        val before = positions.getValue("${STACK_PREFIX}ENG-111")
+        // The front card's middle: the pile's position plus two 14dp steps, plus half a card.
+        dragBy(state.toScreen(Offset(223f, 848f)), Offset(90f, 40f))
+
+        assertEquals(
+            setOf("${STACK_PREFIX}ENG-111"),
+            reported.keys,
+            "a pile drag reported something other than the one slot it occupies",
+        )
+        val after = positions.getValue("${STACK_PREFIX}ENG-111")
+        assertTrue(
+            abs(after.x - before.x) > 40f && abs(after.y - before.y) > 20f,
+            "the pile did not move: $before to $after",
+        )
+        // No member picked up a position of its own on the way.
+        assertTrue(
+            positions.keys.none { it in setOf("ENG-111", "ENG-112", "ENG-113") },
+            "a stacked member was given its own position: ${positions.keys}",
+        )
+    }
+
     // -- driving ------------------------------------------------------------------------------
 
     private fun cardCentre(id: String): Offset {
@@ -463,6 +546,17 @@ class CanvasInteractionTest {
             button = PointerButton.Primary,
             buttons = PointerButtons(),
         )
+        scene.render()
+    }
+
+    /**
+     * A left click on the canvas itself. The canvas and the cards both offer a double tap, so
+     * `detectTapGestures` holds `onTap` back until the double-tap window closes. That window is
+     * real time on a real dispatcher, and the scene only runs its dispatcher while it renders.
+     */
+    private fun tapCanvas(at: Offset) {
+        click(at)
+        Thread.sleep(350)
         scene.render()
     }
 

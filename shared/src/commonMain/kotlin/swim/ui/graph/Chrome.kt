@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,7 +27,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
@@ -90,6 +93,57 @@ private fun ModeButton(
                     .align(Alignment.TopStart)
                     .offset(y = 28.dp)
                     .wrapContentSize(unbounded = true, align = Alignment.TopStart)
+                    .background(Swim.Bg, RoundedCornerShape(4.dp))
+                    .border(1.dp, Swim.Border, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
+        }
+    }
+}
+
+/**
+ * The count on a pile of stacked cards, just off the front card's top right corner, with the
+ * members on hover.
+ *
+ * ponytail: the tooltip is the whole preview. There is no fan-out that spreads the pile out to
+ * read every card at once; click a peeking card to bring it forward instead.
+ */
+@Composable
+internal fun StackBadge(members: Set<String>, front: Rect, density: Float) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Box(
+        modifier = Modifier
+            .offset {
+                IntOffset(
+                    ((front.right + 4f) * density).roundToInt(),
+                    (front.top * density).roundToInt(),
+                )
+            }
+            .wrapContentSize(unbounded = true, align = Alignment.TopStart),
+    ) {
+        Text(
+            text = "×${members.size}",
+            color = Swim.Accent,
+            fontSize = 10.sp,
+            maxLines = 1,
+            modifier = Modifier
+                .background(Swim.Card, RoundedCornerShape(3.dp))
+                .border(1.dp, Swim.Border, RoundedCornerShape(3.dp))
+                .hoverable(interaction)
+                .padding(horizontal = 4.dp, vertical = 1.dp),
+        )
+        if (hovered) {
+            Text(
+                text = "One PR branch: ${members.sorted().joinToString(", ")}",
+                color = Swim.Text,
+                fontSize = 10.sp,
+                maxLines = 3,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(y = 20.dp)
+                    .wrapContentSize(unbounded = true, align = Alignment.TopStart)
+                    .widthIn(max = 220.dp)
                     .background(Swim.Bg, RoundedCornerShape(4.dp))
                     .border(1.dp, Swim.Border, RoundedCornerShape(4.dp))
                     .padding(horizontal = 6.dp, vertical = 3.dp),

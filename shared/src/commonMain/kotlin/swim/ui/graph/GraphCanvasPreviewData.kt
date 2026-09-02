@@ -1,5 +1,6 @@
 package swim.ui.graph
 
+import swim.core.model.EdgeProvenance
 import swim.core.model.GraphData
 import swim.core.model.IssueEdge
 import swim.core.model.IssueNode
@@ -78,6 +79,9 @@ object GraphCanvasPreview {
             node(
                 "ENG-106", "Relation intent chooser",
                 "Paused", WorkflowStateType.STARTED, 3, estimate = 2,
+                pullRequests = listOf(
+                    PullRequestRef("https://github.com/swim/swim/pull/419", "Relation chooser"),
+                ),
             ),
             node(
                 "ENG-107", "Persist hand placed node positions",
@@ -96,6 +100,29 @@ object GraphCanvasPreview {
                 "ENG-110", "Headless render test harness",
                 "Canceled", WorkflowStateType.CANCELED, 0,
             ),
+            // Three issues on one pull-request branch: the pile, drawn as one slot.
+            node(
+                "ENG-111", "Split the toolbar into two rows",
+                "In Progress", WorkflowStateType.STARTED, 2, estimate = 2,
+                assignee = "Ada Lovelace",
+                pullRequests = listOf(
+                    PullRequestRef("https://github.com/swim/swim/pull/420", "Toolbar rows"),
+                ),
+            ),
+            node(
+                "ENG-112", "Move the view toggles beside the group select",
+                "In Progress", WorkflowStateType.STARTED, 3, estimate = 1,
+                pullRequests = listOf(
+                    PullRequestRef("https://github.com/swim/swim/pull/421", "View toggles"),
+                ),
+            ),
+            node(
+                "ENG-113", "Count the drawn issues in the toolbar",
+                "Todo", WorkflowStateType.UNSTARTED, 4, estimate = 1,
+                pullRequests = listOf(
+                    PullRequestRef("https://github.com/swim/swim/pull/422", "Toolbar counts"),
+                ),
+            ),
         ),
         edges = listOf(
             IssueEdge("ENG-101", "ENG-103", RelationType.BLOCKS, "r1"),
@@ -110,7 +137,14 @@ object GraphCanvasPreview {
             IssueEdge("ENG-110", "ENG-102", RelationType.BLOCKS, "r10"),
             IssueEdge("ENG-106", "ENG-107", RelationType.RELATED, "r11"),
             IssueEdge("ENG-109", "ENG-110", RelationType.DUPLICATE, "r12"),
+            // No relation id: Linear never wrote this one down. ENG-111 starts from ENG-106's
+            // branch, so ENG-106 blocks it.
+            IssueEdge(
+                "ENG-106", "ENG-111", RelationType.BLOCKS,
+                provenance = EdgeProvenance.PR_DERIVED,
+            ),
         ),
+        stacks = listOf(setOf("ENG-111", "ENG-112", "ENG-113")),
     )
 
     /** ENG-102 blocks ENG-104, but ENG-101 is the deeper blocker that owns the placement. */
@@ -128,8 +162,18 @@ object GraphCanvasPreview {
         "https://github.com/swim/swim/pull/412" to PrStatus("APPROVED", "SUCCESS"),
         "https://github.com/swim/swim/pull/415" to PrStatus("CHANGES_REQUESTED", "FAILURE"),
         "https://github.com/swim/swim/pull/418" to PrStatus(null, "PENDING"),
+        "https://github.com/swim/swim/pull/419" to
+            PrStatus("APPROVED", "SUCCESS", "eng-106-chooser", "main"),
+        // One head branch for the three stacked issues; ENG-111 also bases on ENG-106.
+        "https://github.com/swim/swim/pull/420" to
+            PrStatus(null, "PENDING", "eng-111-toolbar", "eng-106-chooser"),
+        "https://github.com/swim/swim/pull/421" to
+            PrStatus(null, null, "eng-111-toolbar", "main"),
+        "https://github.com/swim/swim/pull/422" to
+            PrStatus(null, null, "eng-111-toolbar", "main"),
     )
 
+    /** Keyed by layout slot: the three stacked issues share one, under [STACK_PREFIX]. */
     val positions: Map<String, Position> = mapOf(
         "ENG-101" to Position(60f, 40f),
         "ENG-102" to Position(400f, 40f),
@@ -141,5 +185,6 @@ object GraphCanvasPreview {
         "ENG-108" to Position(740f, 400f),
         "ENG-109" to Position(400f, 580f),
         "ENG-110" to Position(740f, 580f),
+        "${STACK_PREFIX}ENG-111" to Position(60f, 760f),
     )
 }
