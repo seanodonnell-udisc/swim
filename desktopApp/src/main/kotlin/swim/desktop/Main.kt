@@ -25,8 +25,13 @@ import swim.core.auth.Pkce
 import swim.core.auth.TokenStore
 import swim.core.auth.JvmTokenStore
 import swim.core.auth.createTokenStore
+import swim.core.config.configDir
 import swim.core.config.loadConfig
 import swim.core.model.AuthError
+import swim.core.session.FilePositionStore
+import swim.core.session.POSITIONS_KEY
+import java.nio.file.Files
+import java.nio.file.Path
 import swim.ui.app.AppCommand
 import swim.ui.app.AppCommands
 import swim.ui.app.SwimApp
@@ -48,11 +53,14 @@ fun main() {
     val commands = AppCommands()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    val positions = migratedPositionStore(settings)
+
     val env = SwimEnv(
         http = http,
         tokenStore = tokenStore,
         settings = settings,
         scope = scope,
+        positionStore = positions,
         config = loadConfig(),
         commands = commands,
         openUrl = ::openUrl,
@@ -165,3 +173,18 @@ private fun writeWindow(
 }
 
 private const val CALLBACK_TIMEOUT_MS = 180_000L
+
+/**
+ * The file-backed position store, seeded once from the old preferences entry. Preferences cap a
+ * value at 8 KB, which a real snapshot exceeds; the file has no cap.
+ */
+private fun migratedPositionStore(settings: Settings): FilePositionStore {
+    val path = Path.of(configDir(), "positions.json")
+    if (!Files.exists(path)) {
+        settings.getStringOrNull(POSITIONS_KEY)?.let { legacy ->
+            Files.createDirectories(path.parent)
+            Files.writeString(path, legacy)
+        }
+    }
+    return FilePositionStore(path)
+}

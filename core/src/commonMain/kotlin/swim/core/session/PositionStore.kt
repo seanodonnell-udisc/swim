@@ -26,24 +26,54 @@ class SettingsPositionStore(
     private val settings: Settings,
     private val key: String = POSITIONS_KEY,
 ) : PositionStore {
-    override fun get(): PositionSnapshot {
-        val stored = settings.getStringOrNull(key) ?: return PositionSnapshot()
-        return try {
-            PositionSnapshot(
-                positionJson.decodeFromString(SNAPSHOT, stored)
-                    .mapValues { (_, byId) -> byId.mapValues { (_, p) -> Position(p.x, p.y) } }
-            )
-        } catch (e: Exception) {
-            PositionSnapshot()
-        }
+    override fun get(): PositionSnapshot = decodeSnapshot(settings.getStringOrNull(key))
+
+    override fun set(snapshot: PositionSnapshot) {
+        settings.putString(key, encodeSnapshot(snapshot))
+    }
+}
+
+/**
+ * A [PositionStore] that logs a failed write instead of throwing. Positions are a convenience;
+ * losing one save must never take the app down.
+ */
+class SafePositionStore(
+    private val delegate: PositionStore,
+    private val log: (String) -> Unit = {},
+) : PositionStore {
+    override fun get(): PositionSnapshot = try {
+        delegate.get()
+    } catch (e: Exception) {
+        log("position read failed: ${e.message}")
+        PositionSnapshot()
     }
 
     override fun set(snapshot: PositionSnapshot) {
-        val stored = snapshot.byKey.mapValues { (_, byId) ->
-            byId.mapValues { (_, p) -> StoredPosition(p.x, p.y) }
+        try {
+            delegate.set(snapshot)
+        } catch (e: Exception) {
+            log("position save failed: ${e.message}")
         }
-        settings.putString(key, positionJson.encodeToString(SNAPSHOT, stored))
     }
+}
+
+internal fun decodeSnapshot(stored: String?): PositionSnapshot {
+    if (stored == null) return PositionSnapshot()
+    return try {
+        PositionSnapshot(
+            positionJson.decodeFromString(SNAPSHOT, stored)
+                .mapValues { (_, byId) -> byId.mapValues { (_, p) -> Position(p.x, p.y) } }
+        )
+    } catch (e: Exception) {
+        PositionSnapshot()
+    }
+}
+
+internal fun encodeSnapshot(snapshot: PositionSnapshot): String {
+    val stored = snapshot.byKey.mapValues { (_, byId) ->
+        byId.mapValues { (_, p) -> StoredPosition(p.x, p.y) }
+    }
+    return positionJson.encodeToString(SNAPSHOT, stored)
 }
 
 /**

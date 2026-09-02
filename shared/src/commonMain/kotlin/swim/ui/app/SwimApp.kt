@@ -25,6 +25,7 @@ import swim.core.session.AuthStatus
 import swim.core.session.FilterStore
 import swim.core.session.GraphSession
 import swim.core.session.PositionStore
+import swim.core.session.SafePositionStore
 import swim.core.session.SettingsPositionStore
 import swim.core.session.authStatus
 import swim.ui.auth.LoginScreen
@@ -58,6 +59,8 @@ class SwimEnv(
     val tokenStore: TokenStore,
     val settings: Settings,
     val scope: CoroutineScope,
+    /** Platform position storage. Null falls back to [SettingsPositionStore], whose JVM backing caps a value at 8 KB. */
+    val positionStore: PositionStore? = null,
     val config: SwimConfig = SwimConfig(),
     val commands: AppCommands = AppCommands(),
     val openUrl: (String) -> Unit = {},
@@ -101,7 +104,7 @@ internal fun buildSession(env: SwimEnv): SwimSession {
     val client = LinearClient(env.http, auth, env.config)
     val github = GithubClient(env.http, env.log) { env.tokenStore.getGithub() }
     val filters = FilterStore(env.settings)
-    val positions = SettingsPositionStore(env.settings)
+    val positions = SafePositionStore(env.positionStore ?: SettingsPositionStore(env.settings), env.log)
     return SwimSession(
         client = client,
         github = github,

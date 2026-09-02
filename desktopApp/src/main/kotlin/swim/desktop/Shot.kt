@@ -43,14 +43,14 @@ fun main(args: Array<String>) {
     val savedSeen = Settings().getBooleanOrNull(SEEN_SHORTCUTS)
 
     fun graphEnv(commands: AppCommands = AppCommands()) = SwimEnv(
-        http, tokenStore(), Settings(), scope(), loadConfig(),
+        http, tokenStore(), Settings(), scope(), config = loadConfig(),
         commands = commands, devAutoload = autoload, log = Log::line,
     )
 
     // Every shot but the last one wants the first-run overlay out of the way.
     Settings().putBoolean(SEEN_SHORTCUTS, true)
 
-    shoot(outDir, "p3b-shot-login.png", 4, SwimEnv(http, EmptyTokenStore, Settings(), scope(), loadConfig()))
+    shoot(outDir, "p3b-shot-login.png", 4, SwimEnv(http, EmptyTokenStore, Settings(), scope(), config = loadConfig()))
     shoot(outDir, "p3b-shot-graph.png", 60, graphEnv())
 
     // Five zoom-outs land near 0.40. Cards keep their one full style at every scale.
