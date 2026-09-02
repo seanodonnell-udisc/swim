@@ -25,12 +25,15 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
+            // The session layer holds the position cache, whose types live in :layout.
+            api(projects.layout)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
             implementation(libs.ktor.serialization.kotlinx.json)
-            implementation(libs.multiplatform.settings.no.arg)
+            // FilterStore and SettingsPositionStore take a Settings, so it is part of the API.
+            api(libs.multiplatform.settings.no.arg)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))

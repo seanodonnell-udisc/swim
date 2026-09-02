@@ -18,6 +18,7 @@ data class IssueNode(
     val project: String? = null,
     val labels: List<String> = emptyList(),
     val assignee: String? = null,
+    val assigneeId: String? = null,
     val estimate: Int? = null,
     val description: String? = null,
     val url: String? = null,

@@ -5,19 +5,27 @@ import swim.core.model.IssueEdge
 import swim.core.model.IssueNode
 import swim.core.model.PRIORITY_LABELS
 import swim.core.model.RelationType
+import swim.core.model.WorkflowStateType
+import swim.core.session.StateCategory
+import swim.core.session.stateCategory
 
-val STATE_STYLES: Map<String, String> = mapOf(
-    "done" to "fill:#36b37e,stroke:#1e7e34",
-    "completed" to "fill:#36b37e,stroke:#1e7e34",
-    "canceled" to "fill:#616161,stroke:#424242",
-    "cancelled" to "fill:#616161,stroke:#424242",
-    "in progress" to "fill:#fff9c4,stroke:#f9a825",
-    "in review" to "fill:#c8e6c9,stroke:#388e3c",
-    "paused" to "fill:#bbdefb,stroke:#1976d2",
-    "in limbo" to "fill:#bbdefb,stroke:#1976d2",
-    "todo" to "fill:#ffffff,stroke:#bdbdbd",
-    "backlog" to "fill:#e0e0e0,stroke:#9e9e9e",
+/** The fill and stroke a Mermaid node gets, per state category. */
+val STATE_STYLES: Map<StateCategory, String> = mapOf(
+    StateCategory.DONE to "fill:#36b37e,stroke:#1e7e34",
+    StateCategory.IN_PROGRESS to "fill:#fff9c4,stroke:#f9a825",
+    StateCategory.IN_REVIEW to "fill:#c8e6c9,stroke:#388e3c",
+    StateCategory.BLOCKED to "fill:#ffcdd2,stroke:#c62828",
+    StateCategory.PAUSED to "fill:#bbdefb,stroke:#1976d2",
+    StateCategory.TODO to "fill:#ffffff,stroke:#bdbdbd",
+    StateCategory.BACKLOG to "fill:#e0e0e0,stroke:#9e9e9e",
 )
+
+/** Canceled work reads as done everywhere else, but a diagram must not paint it as finished. */
+const val CANCELED_STYLE: String = "fill:#616161,stroke:#424242"
+
+private fun styleOf(node: IssueNode): String =
+    if (node.stateType == WorkflowStateType.CANCELED) CANCELED_STYLE
+    else STATE_STYLES.getValue(stateCategory(node.state, node.stateType))
 
 private fun escapeLabel(text: String): String = text
     .replace("\"", "'")
@@ -87,10 +95,7 @@ fun generateFlowchart(nodes: List<IssueNode>, edges: List<IssueEdge>, options: D
     for (edge in edges) mermaid.append("  ${formatEdge(edge)}\n")
 
     mermaid.append("\n")
-    for (node in nodes) {
-        val stateStyle = STATE_STYLES[node.state.lowercase()]
-        if (stateStyle != null) mermaid.append("  style ${nodeId(node.identifier)} $stateStyle\n")
-    }
+    for (node in nodes) mermaid.append("  style ${nodeId(node.identifier)} ${styleOf(node)}\n")
 
     return mermaid.toString()
 }
