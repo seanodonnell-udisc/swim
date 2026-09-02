@@ -46,6 +46,7 @@ internal fun groupKeyOf(node: IssueNode, groupBy: GraphGrouping): String = when 
     GraphGrouping.TEAM -> node.team
     GraphGrouping.PROJECT -> node.project ?: "No project"
     GraphGrouping.LABEL -> node.labels.firstOrNull() ?: "No label"
+    GraphGrouping.MILESTONE -> node.milestone ?: "No milestone"
 }
 
 /** Cards are a fixed size, so every node is the same box. */

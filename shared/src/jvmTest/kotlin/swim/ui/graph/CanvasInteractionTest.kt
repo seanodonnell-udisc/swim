@@ -5,6 +5,9 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.toComposeImageBitmap
@@ -17,6 +20,7 @@ import androidx.compose.ui.input.pointer.PointerButtons
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.unit.Density
 import swim.core.model.RelationType
+import swim.layout.Position
 import java.io.File
 import kotlin.math.abs
 import kotlin.test.AfterTest
@@ -44,16 +48,22 @@ class CanvasInteractionTest {
     private val state = GraphCanvasState()
     private val log = mutableListOf<String>()
 
+    // Hoisted the way GraphScreen hoists them, so a drop really round trips.
+    private var positions by mutableStateOf(GraphCanvasPreview.positions)
+    private var selection by mutableStateOf(emptySet<String>())
+    private var reported: Map<String, Position> = emptyMap()
+
     private val scene = ImageComposeScene(WIDTH, HEIGHT, Density(1f)) {
         GraphCanvas(
             graph = GraphCanvasPreview.graph,
-            positions = GraphCanvasPreview.positions,
+            positions = positions,
             modifier = Modifier.fillMaxSize(),
             readySet = GraphCanvasPreview.readySet,
             prStatuses = GraphCanvasPreview.prStatuses,
             users = GraphCanvasPreview.users,
             crossLinks = GraphCanvasPreview.crossLinks,
             cycleEdges = GraphCanvasPreview.cycleEdges,
+            selection = selection,
             state = state,
             callbacks = GraphCanvasCallbacks(
                 onOpenIssue = { log += "open:$it" },
@@ -66,8 +76,15 @@ class CanvasInteractionTest {
                     log += "change:${edge.from}>${edge.to}:$type:$reversed"
                 },
                 onRemoveRelation = { log += "remove:${it.from}>${it.to}:${it.type}" },
-                onSelectionChange = { log += "select:${it.sorted()}" },
-                onNodesMoved = { moved -> log += "moved:${moved.keys.sorted().joinToString(",")}" },
+                onSelectionChange = {
+                    log += "select:${it.sorted()}"
+                    selection = it
+                },
+                onNodesMoved = { moved ->
+                    log += "moved:${moved.keys.sorted().joinToString(",")}"
+                    reported = moved
+                    positions = positions + moved
+                },
                 onRelayout = { log += "relayout" },
                 onReload = { log += "reload" },
             ),
@@ -284,6 +301,51 @@ class CanvasInteractionTest {
         assertTrue(
             abs(state.offset.x - before.x) > 40f && abs(state.offset.y - before.y) > 25f,
             "the drag over a card did not pan: $before to ${state.offset}",
+        )
+    }
+
+    @Test
+    fun aDropLandsExactlyWhereTheUserPutItAndMovesNothingElse() {
+        val target = GraphCanvasPreview.positions.getValue("ENG-103")
+        val others = positions.filterKeys { it != "ENG-101" }
+        dragBy(cardCentre("ENG-101"), cardCentre("ENG-103") - cardCentre("ENG-101"))
+
+        // What the canvas reported is exactly what the caller now holds. No rounding, no nudge.
+        assertEquals(reported.getValue("ENG-101"), positions.getValue("ENG-101"))
+        assertEquals(others, positions.filterKeys { it != "ENG-101" }, "another card moved")
+
+        // And it really did land on the other card. Overlapping is the user's prerogative.
+        val dropped = positions.getValue("ENG-101")
+        assertTrue(
+            abs(dropped.x - target.x) < 0.5f && abs(dropped.y - target.y) < 0.5f,
+            "the drop did not reach the target card: $dropped against $target",
+        )
+    }
+
+    @Test
+    fun aSelectionDragMovesEveryChosenCardByTheSameDelta() {
+        rightClick(Offset(1150f, 620f))
+        click(menuRow(Offset(1150f, 620f), 3))
+        assertEquals(GraphCanvasPreview.positions.keys, selection, "Select All did not select all")
+
+        val before = positions
+        dragBy(cardCentre("ENG-101"), Offset(70f, 45f))
+
+        assertEquals(before.keys, reported.keys, "the selection did not move as one unit")
+        // Every reported position is exactly what the caller ended up holding.
+        assertEquals(reported, positions)
+
+        // One delta for the whole selection. Adding it to each card rounds in the last bit, so
+        // the floats are compared with a tolerance, not for equality.
+        val deltas = positions.map { (id, now) ->
+            val was = before.getValue(id)
+            Offset(now.x - was.x, now.y - was.y)
+        }
+        val first = deltas.first()
+        assertTrue(first != Offset.Zero, "nothing moved")
+        assertTrue(
+            deltas.all { abs(it.x - first.x) < 0.01f && abs(it.y - first.y) < 0.01f },
+            "the cards moved by different amounts: ${deltas.toSet()}",
         )
     }
 

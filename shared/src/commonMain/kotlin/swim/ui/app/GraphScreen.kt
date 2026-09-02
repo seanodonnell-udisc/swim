@@ -376,9 +376,14 @@ internal fun GraphScreen(
                             ) { holder.session.removeRelation(edge) }
                         },
                         onNodesMoved = { moved ->
-                            holder.session.savePositions(moved)
-                            placement = placement.copy(positions = placement.positions + moved)
-                                .let { it.copy(groups = groupBoxesOf(projected, filterState.groupBy, it.positions)) }
+                            // The whole visible layout is persisted, not just the cards that
+                            // moved. A node the snapshot does not name counts as auto-placed, so
+                            // the next placement pass would re-derive it and cascade it out of
+                            // the way of the one the user just dropped. A drop is final.
+                            val placed = placement.positions + moved
+                            holder.session.savePositions(placed)
+                            placement = placement.copy(positions = placed)
+                                .let { it.copy(groups = groupBoxesOf(projected, filterState.groupBy, placed)) }
                         },
                         onSelectionChange = { selection = it },
                         onRelayout = {

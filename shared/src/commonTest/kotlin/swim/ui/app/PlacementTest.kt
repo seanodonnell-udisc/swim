@@ -28,6 +28,8 @@ private fun node(id: String, team: String = "ENG", project: String? = null, labe
         labels = labels,
     )
 
+private const val KEY = "team=ENG"
+
 private fun blocks(from: String, to: String) = IssueEdge(from, to, RelationType.BLOCKS, "rel-$from-$to")
 
 class PlacementTest {
@@ -109,6 +111,50 @@ class PlacementTest {
         val saved = PositionSnapshot(mapOf("k" to mapOf("A" to Position(900f, 40f))))
         val placed = placeGraph(graph, GraphGrouping.NONE, "k", saved)
         assertEquals(Position(900f, 40f), placed.positions.getValue("A"))
+    }
+
+    @Test
+    fun aDropIsFinalWhenTheWholeLayoutIsPersisted() {
+        val graph = GraphData(
+            nodes = listOf(node("A"), node("B"), node("C"), node("D")),
+            edges = listOf(blocks("A", "B"), blocks("A", "C"), blocks("B", "D")),
+        )
+        val first = placeGraph(graph, GraphGrouping.NONE, KEY, PositionSnapshot())
+
+        // The user drops A exactly on top of B. Overlapping cards are their prerogative.
+        val dropped = first.positions + ("A" to first.positions.getValue("B"))
+        val snapshot = PositionSnapshot(mapOf(KEY to dropped))
+
+        // Any reload re-runs the placement pass. Nothing may move.
+        val again = placeGraph(graph, GraphGrouping.NONE, KEY, snapshot)
+        assertEquals(dropped, again.positions)
+        assertEquals(
+            again.positions.getValue("B"),
+            again.positions.getValue("A"),
+            "the overlap was resolved away behind the user's back",
+        )
+
+        // And it survives one more round trip through the snapshot it reports.
+        val third = placeGraph(graph, GraphGrouping.NONE, KEY, again.snapshot)
+        assertEquals(dropped, third.positions)
+    }
+
+    @Test
+    fun persistingOnlyTheMovedNodeLetsTheRestBeReArranged() {
+        // This is what a drop must NOT save. It is the shape of the defect, kept as a guard.
+        val graph = GraphData(
+            nodes = listOf(node("A"), node("B"), node("C"), node("D")),
+            edges = listOf(blocks("A", "B"), blocks("A", "C"), blocks("B", "D")),
+        )
+        val first = placeGraph(graph, GraphGrouping.NONE, KEY, PositionSnapshot())
+        val onlyMoved = PositionSnapshot(
+            mapOf(KEY to mapOf("A" to first.positions.getValue("B"))),
+        )
+        val again = placeGraph(graph, GraphGrouping.NONE, KEY, onlyMoved)
+        assertTrue(
+            again.positions.filterKeys { it != "A" } != first.positions.filterKeys { it != "A" },
+            "a one-node snapshot no longer disturbs the others, so the drop may save just one",
+        )
     }
 
     @Test
