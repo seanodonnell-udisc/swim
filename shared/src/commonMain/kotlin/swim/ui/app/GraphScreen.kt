@@ -190,11 +190,14 @@ internal fun GraphScreen(
         )
     }
 
+    var placedRelayouts by remember { mutableStateOf(0) }
     LaunchedEffect(projected, filterState.groupBy, relayouts) {
         val key = holder.session.layoutCacheKey()
+        val relayout = relayouts != placedRelayouts
+        placedRelayouts = relayouts
         val snapshot = holder.positions.get()
         val next = withContext(Dispatchers.Default) {
-            placeGraph(projected, filterState.groupBy, key, snapshot)
+            placeGraph(projected, filterState.groupBy, key, snapshot, relayout = relayout)
         }
         // A drag that landed while the layout ran wrote to the same key. It is the newer intent,
         // so it wins over the positions this pass computed from the pre-drag snapshot.
@@ -244,7 +247,6 @@ internal fun GraphScreen(
             when (command) {
                 AppCommand.RELOAD -> holder.session.reload()
                 AppCommand.RELAYOUT -> {
-                    forgetLayout(holder)
                     relayouts++
                 }
                 AppCommand.ZOOM_IN -> canvasState.zoomIn()
@@ -276,7 +278,6 @@ internal fun GraphScreen(
             OverflowMenu(
                 githubConnected = status.githubConfigured,
                 onRelayout = {
-                    forgetLayout(holder)
                     relayouts++
                 },
                 onConnectGithub = { githubDialog = true },
@@ -421,7 +422,6 @@ internal fun GraphScreen(
                         },
                         onSelectionChange = { selection = it },
                         onRelayout = {
-                            forgetLayout(holder)
                             relayouts++
                         },
                         onReload = { holder.session.reload() },
@@ -738,12 +738,6 @@ private fun relationDetail(
         else -> "$from duplicate of $to"
     }
     return "This changes the relation in Linear: $verb."
-}
-
-/** Drops this query's saved layout so the next placement runs fresh. */
-private fun forgetLayout(holder: SwimSession) {
-    val snapshot = holder.positions.get()
-    holder.positions.set(PositionSnapshot(snapshot.byKey - holder.session.layoutCacheKey()))
 }
 
 private suspend fun signOut(env: SwimEnv, holder: SwimSession) {

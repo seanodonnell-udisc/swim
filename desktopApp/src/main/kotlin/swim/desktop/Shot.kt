@@ -20,6 +20,7 @@ import kotlinx.coroutines.SupervisorJob
 import swim.core.auth.LinearTokens
 import swim.core.auth.TokenStore
 import swim.core.config.loadConfig
+import swim.core.session.FilePositionStore
 import swim.ui.app.AppCommand
 import swim.ui.app.AppCommands
 import swim.ui.app.SwimApp
@@ -46,9 +47,13 @@ fun main(args: Array<String>) {
     val savedFilters = Settings().getStringOrNull(FILTERS)
     val savedSeen = Settings().getBooleanOrNull(SEEN_SHORTCUTS)
 
+    // Its own file store. The settings-backed fallback caps a value at 8 KB, which a real
+    // graph's layout passes, and the shots must not write the running app's positions either.
+    val positions = java.nio.file.Files.createTempFile("swim-shot-positions", ".json")
     fun graphEnv(commands: AppCommands = AppCommands()) = SwimEnv(
         http, tokenStore(), Settings(), scope(), config = loadConfig(),
         commands = commands, devAutoload = autoload, log = Log::line,
+        positionStore = FilePositionStore(positions),
     )
 
     // Every shot but the last one wants the first-run overlay out of the way.
@@ -132,6 +137,7 @@ fun main(args: Array<String>) {
     shoot(outDir, "p3d-shot-shortcuts.png", 60, graphEnv())
     if (savedSeen == null) Settings().remove(SEEN_SHORTCUTS) else Settings().putBoolean(SEEN_SHORTCUTS, savedSeen)
 
+    java.nio.file.Files.deleteIfExists(positions)
     Log.line("shots written to ${outDir.absolutePath}")
     kotlin.system.exitProcess(0)
 }

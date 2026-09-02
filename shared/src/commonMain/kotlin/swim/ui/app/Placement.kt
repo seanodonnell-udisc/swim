@@ -5,6 +5,7 @@ import swim.core.model.GraphData
 import swim.core.model.IssueNode
 import swim.core.model.RelationType
 import swim.core.session.GraphGrouping
+import swim.core.session.groupingOf
 import swim.layout.LayoutEdge
 import swim.layout.LayoutEdgeKind
 import swim.layout.LayoutNode
@@ -155,6 +156,12 @@ fun placeGraph(
     cacheKey: String,
     snapshot: PositionSnapshot,
     params: LayoutParams = LayoutParams(),
+    /**
+     * Re-layout. Ignores this key's saved layout, every donor key, and the area offsets, then
+     * saves what `layout` produced. Deleting the key alone is not enough: the closest sibling
+     * key shares every node, so inheritance hands the discarded arrangement straight back.
+     */
+    relayout: Boolean = false,
 ): GraphPlacement {
     if (graph.nodes.isEmpty()) return GraphPlacement(snapshot = snapshot)
 
@@ -163,10 +170,21 @@ fun placeGraph(
     val fresh = if (groupBy == GraphGrouping.NONE) {
         layout(nodes, edges, params)
     } else {
-        layoutGrouped(graph, nodes, edges, groupBy, params, groupOffsetsIn(snapshot, cacheKey))
+        val offsets = if (relayout) emptyMap() else groupOffsetsIn(snapshot, cacheKey)
+        layoutGrouped(graph, nodes, edges, groupBy, params, offsets)
     }
 
-    val placed = reuseAndPlace(cacheKey, fresh, nodes, forCache(snapshot, cacheKey, groupBy))
+    if (relayout) {
+        return GraphPlacement(
+            positions = fresh.positions,
+            crossLinks = fresh.crossLinks.mapTo(mutableSetOf()) { blocksEdgeKey(it.from, it.to) },
+            cycleEdges = fresh.cycleEdges.mapTo(mutableSetOf()) { blocksEdgeKey(it.from, it.to) },
+            groups = groupBoxesOf(graph, groupBy, fresh.positions),
+            snapshot = PositionSnapshot(snapshot.byKey + (cacheKey to fresh.positions)),
+        )
+    }
+
+    val placed = reuseAndPlace(cacheKey, fresh, nodes, forCache(snapshot, cacheKey))
     val areaOffsets = snapshot.byKey[cacheKey].orEmpty()
         .filterKeys { it.startsWith(GROUP_OFFSET_PREFIX) }
     return GraphPlacement(
@@ -191,22 +209,21 @@ fun placeGraph(
  * present, and `reuseAndPlace` reads a present entry as "run the overlap pass" instead of
  * "the fresh layout stands as it is".
  *
- * A grouped view is also cut off from the other queries. `reuseAndPlace` inherits the saved
- * layout that shares the most nodes, and the ungrouped layout of the same issues always shares
- * all of them, so switching to a grouping would reuse the ungrouped arrangement and never lay
- * the areas out at all.
+ * Donor keys are also cut down to the ones with the same grouping. `reuseAndPlace` inherits the
+ * saved layout that shares the most nodes, and every grouping of one query shares all of them,
+ * so a grouped view would reuse the flat arrangement and never lay its areas out, and a flat
+ * view would inherit coordinates packed for areas. Same-grouping donation is the intended
+ * feature and still runs: the team variants of one flat view keep reusing each other.
  *
- * ponytail: the reverse hole is open. An ungrouped view of a brand new query can still inherit
- * from a grouped key. Closing it needs the grouping to be readable from the cache key, which
- * `swim.core.session.cacheKey` owns.
+ * A key that did not come from `cacheKey` has no grouping. Two of those match each other, so a
+ * test may use a plain string for both sides.
  */
 private fun forCache(
     snapshot: PositionSnapshot,
     cacheKey: String,
-    groupBy: GraphGrouping,
 ): PositionSnapshot = PositionSnapshot(
     snapshot.byKey
-        .filterKeys { groupBy == GraphGrouping.NONE || it == cacheKey }
+        .filterKeys { it == cacheKey || groupingOf(it) == groupingOf(cacheKey) }
         .mapValues { (_, saved) -> saved.filterKeys { !it.startsWith(GROUP_OFFSET_PREFIX) } }
         // An entry that held only offsets is now empty, and `reuseAndPlace` reads a present but
         // empty entry as "run the overlap pass". It must look absent instead.

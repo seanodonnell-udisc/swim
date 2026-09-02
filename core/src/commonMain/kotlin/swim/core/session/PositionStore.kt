@@ -84,6 +84,14 @@ internal fun encodeSnapshot(snapshot: PositionSnapshot): String {
 fun cacheKey(filters: FilterOptions, groupBy: GraphGrouping): String =
     positionJson.encodeToString(CacheKeyInput.serializer(), CacheKeyInput(filters, groupBy))
 
+/**
+ * The grouping a [cacheKey] was built with, or null when the key did not come from [cacheKey].
+ * Layout inheritance uses this: a grouped arrangement means nothing to a flat view.
+ */
+fun groupingOf(key: String): GraphGrouping? = runCatching {
+    positionJson.decodeFromString(CacheKeyInput.serializer(), key).groupBy
+}.getOrNull()
+
 @Serializable
 private data class CacheKeyInput(val filters: FilterOptions, val groupBy: GraphGrouping)
 

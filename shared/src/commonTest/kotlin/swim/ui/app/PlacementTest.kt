@@ -5,7 +5,9 @@ import swim.core.model.IssueEdge
 import swim.core.model.IssueNode
 import swim.core.model.RelationType
 import swim.core.model.WorkflowStateType
+import swim.core.model.FilterOptions
 import swim.core.session.GraphGrouping
+import swim.core.session.cacheKey
 import androidx.compose.ui.geometry.Offset
 import swim.layout.LayoutEdge
 import swim.layout.LayoutEdgeKind
@@ -246,37 +248,78 @@ class PlacementTest {
 
     @Test
     fun eachGroupingKeepsItsOwnArrangement() {
-        val noneKey = "q|none"
-        val milestoneKey = "q|milestone"
-        val arrangedInNone = mapOf("A" to Position(10f, 20f))
+        val flat = cacheKey(FilterOptions(team = "ENG"), GraphGrouping.NONE)
+        val grouped = cacheKey(FilterOptions(team = "ENG"), GraphGrouping.MILESTONE)
+        val arrangedFlat = mapOf("A" to Position(10f, 20f))
+        val arrangedGrouped = mapOf("A" to Position(999f, 111f))
 
-        // Switching to milestone must lay the areas out. Reusing the ungrouped arrangement,
-        // which shares every node, would leave the areas undrawn.
-        val fresh = placeGraph(
-            milestoned, GraphGrouping.MILESTONE, milestoneKey,
-            PositionSnapshot(mapOf(noneKey to arrangedInNone)),
+        // Neither grouping may donate to the other, in either direction.
+        val fromFlat = placeGraph(
+            milestoned, GraphGrouping.MILESTONE, grouped, PositionSnapshot(mapOf(flat to arrangedFlat)),
         )
         assertTrue(
-            fresh.positions.getValue("A") != Position(10f, 20f),
+            fromFlat.positions.getValue("A") != Position(10f, 20f),
             "the milestone view inherited the ungrouped arrangement",
         )
-        assertEquals(listOf("M1", "M2", "No milestone"), fresh.groups.map { it.label })
+        assertEquals(listOf("M1", "M2", "No milestone"), fromFlat.groups.map { it.label })
+
+        val fromGrouped = placeGraph(
+            milestoned, GraphGrouping.NONE, flat, PositionSnapshot(mapOf(grouped to arrangedGrouped)),
+        )
+        assertTrue(
+            fromGrouped.positions.getValue("A") != Position(999f, 111f),
+            "the flat view inherited the grouped arrangement",
+        )
 
         // With an arrangement of its own, each key keeps exactly that one.
-        val both = PositionSnapshot(
-            mapOf(
-                noneKey to arrangedInNone,
-                milestoneKey to mapOf("A" to Position(999f, 111f)),
-            ),
-        )
+        val both = PositionSnapshot(mapOf(flat to arrangedFlat, grouped to arrangedGrouped))
         assertEquals(
             Position(999f, 111f),
-            placeGraph(milestoned, GraphGrouping.MILESTONE, milestoneKey, both).positions.getValue("A"),
+            placeGraph(milestoned, GraphGrouping.MILESTONE, grouped, both).positions.getValue("A"),
         )
         assertEquals(
             Position(10f, 20f),
-            placeGraph(milestoned, GraphGrouping.NONE, noneKey, both).positions.getValue("A"),
+            placeGraph(milestoned, GraphGrouping.NONE, flat, both).positions.getValue("A"),
         )
+    }
+
+    @Test
+    fun aSiblingOfTheSameGroupingStillDonates() {
+        // Two variants of one flat query. Reusing the closest layout is the intended feature.
+        val mine = cacheKey(FilterOptions(team = "MOB"), GraphGrouping.NONE)
+        val sibling = cacheKey(FilterOptions(team = "WEB"), GraphGrouping.NONE)
+        val donated = mapOf("A" to Position(700f, 300f), "B" to Position(700f, 500f))
+        val placed = placeGraph(
+            milestoned, GraphGrouping.NONE, mine, PositionSnapshot(mapOf(sibling to donated)),
+        )
+        assertEquals(Position(700f, 300f), placed.positions.getValue("A"))
+    }
+
+    @Test
+    fun reLayoutEscapesItsOwnCacheAndEverySibling() {
+        val mine = cacheKey(FilterOptions(team = "MOB"), GraphGrouping.NONE)
+        val sibling = cacheKey(FilterOptions(team = "WEB"), GraphGrouping.NONE)
+        val sprawl = milestoned.nodes.associate { it.identifier to Position(15000f, 15000f) }
+        val snapshot = PositionSnapshot(mapOf(mine to sprawl, sibling to sprawl))
+
+        val plain = placeGraph(milestoned, GraphGrouping.NONE, mine, PositionSnapshot())
+        val relaid = placeGraph(milestoned, GraphGrouping.NONE, mine, snapshot, relayout = true)
+
+        assertEquals(plain.positions, relaid.positions, "re-layout did not come from layout()")
+        // Saved straight away, or the next pass would inherit the sprawl back off the sibling.
+        assertEquals(relaid.positions, relaid.snapshot.byKey.getValue(mine))
+        val after = placeGraph(milestoned, GraphGrouping.NONE, mine, relaid.snapshot)
+        assertEquals(plain.positions, after.positions, "the sprawl came back on the next pass")
+    }
+
+    @Test
+    fun reLayoutAlsoClearsTheAreaOffsets() {
+        val key = cacheKey(FilterOptions(team = "ENG"), GraphGrouping.MILESTONE)
+        val snapshot = PositionSnapshot(mapOf(key to mapOf(groupOffsetKey("M1") to Position(300f, 55f))))
+        val plain = placeGraph(milestoned, GraphGrouping.MILESTONE, key, PositionSnapshot())
+        val relaid = placeGraph(milestoned, GraphGrouping.MILESTONE, key, snapshot, relayout = true)
+        assertEquals(plain.positions, relaid.positions)
+        assertTrue(relaid.snapshot.byKey.getValue(key).keys.none { it.startsWith("@group:") })
     }
 
     @Test

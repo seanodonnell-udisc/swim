@@ -6,6 +6,7 @@ import swim.layout.PositionSnapshot
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 
 class PositionStoreTest {
     @Test
@@ -55,5 +56,14 @@ class PositionStoreTest {
             cacheKey(filters, GraphGrouping.NONE),
             cacheKey(FilterOptions(team = "WEB"), GraphGrouping.NONE),
         )
+    }
+
+    @Test
+    fun theGroupingIsReadableBackOffTheCacheKey() {
+        GraphGrouping.entries.forEach { grouping ->
+            val key = cacheKey(FilterOptions(team = "ENG"), grouping)
+            assertEquals(grouping, groupingOf(key))
+        }
+        assertNull(groupingOf("not a cache key"))
     }
 }
