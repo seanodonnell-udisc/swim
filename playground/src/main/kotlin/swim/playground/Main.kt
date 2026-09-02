@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import swim.layout.ChildOrder
 import swim.layout.LayoutEdge
 import swim.layout.LayoutEdgeKind
 import swim.layout.LayoutParams
@@ -81,13 +82,14 @@ fun Playground() {
     var siblingGap by remember { mutableStateOf(40f) }
     var treeGap by remember { mutableStateOf(120f) }
     var affinity by remember { mutableStateOf(0f) }
+    var childOrder by remember { mutableStateOf(ChildOrder.SHORTEST_FIRST) }
     var pan by remember { mutableStateOf(Offset(80f, 40f)) }
     var zoom by remember { mutableStateOf(1f) }
 
     val result = layout(
         nodes = graph.nodes,
         edges = graph.edges,
-        params = LayoutParams(levelGap, siblingGap, treeGap, affinity),
+        params = LayoutParams(levelGap, siblingGap, treeGap, affinity, childOrder = childOrder),
     )
     val measurer = rememberTextMeasurer()
 
@@ -101,6 +103,16 @@ fun Playground() {
             Knob("sibling gap ${siblingGap.roundToInt()}", siblingGap, 0f..200f) { siblingGap = it }
             Knob("tree gap ${treeGap.roundToInt()}", treeGap, 0f..400f) { treeGap = it }
             Knob("affinity ${(affinity * 10f).roundToInt() / 10f}", affinity, 0f..10f) { affinity = it }
+            TextButton(onClick = {
+                childOrder =
+                    if (childOrder == ChildOrder.FETCH) ChildOrder.SHORTEST_FIRST else ChildOrder.FETCH
+            }) {
+                Text(
+                    if (childOrder == ChildOrder.FETCH) "order: fetch" else "order: shortest first",
+                    color = Label,
+                    fontSize = 13.sp,
+                )
+            }
         }
 
         Box(

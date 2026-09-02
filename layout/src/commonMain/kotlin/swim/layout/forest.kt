@@ -36,6 +36,16 @@ internal fun buildForest(
     )
 }
 
+/** Subtree height per node: 1 for a leaf, one more than its tallest child. */
+internal fun subtreeHeights(children: Map<String, List<String>>, levels: Map<String, Int>): Map<String, Int> {
+    val heights = LinkedHashMap<String, Int>()
+    // A child always sits one level below its parent, so the deepest nodes resolve first.
+    for (id in children.keys.sortedByDescending { levels.getValue(it) }) {
+        heights[id] = 1 + (children.getValue(id).maxOfOrNull { heights.getValue(it) } ?: 0)
+    }
+    return heights
+}
+
 /** Maps every node reachable from each of [groupRoots] to the root it descends from. */
 internal fun membership(groupRoots: List<String>, children: Map<String, List<String>>): Map<String, String> {
     val owner = LinkedHashMap<String, String>()
