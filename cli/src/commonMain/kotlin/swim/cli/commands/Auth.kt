@@ -36,17 +36,25 @@ class AuthCommand : SwimCommand("auth") {
     override fun help(context: Context) =
         "Sign in: store your Linear credentials, and connect GitHub for pull-request status"
 
-    private val key by option("--key", metavar = "API_KEY", help = "Linear personal API key instead of OAuth")
-    private val githubToken by option("--github-token", metavar = "TOKEN", help = "connect GitHub with this token and stop")
+    private val key by option(
+        "--key",
+        metavar = "API_KEY",
+        help = "Linear personal API key instead of OAuth; `-` reads the key from stdin",
+    )
+    private val githubToken by option(
+        "--github-token",
+        metavar = "TOKEN",
+        help = "connect GitHub with this token and stop; `-` reads the token from stdin",
+    )
     private val noGithub by option("--no-github", help = "do not connect GitHub").flag()
 
     override suspend fun execute() {
         if (githubToken != null) {
-            connectGithubWithToken(githubToken!!)
+            connectGithubWithToken(orStdin(githubToken!!, "GitHub token"))
             return
         }
 
-        if (key != null) signInWithApiKey(key!!) else signInWithOAuth()
+        if (key != null) signInWithApiKey(orStdin(key!!, "Linear API key")) else signInWithOAuth()
         Out.status("Saved to the login keychain.")
 
         if (noGithub) {
@@ -129,6 +137,16 @@ class AuthCommand : SwimCommand("auth") {
         Runtime.tokenStore.setGithub(token)
         Out.status("GitHub: connected")
     }
+}
+
+/**
+ * A secret on the command line reaches `ps` and the shell history. `-` takes it from stdin
+ * instead, which is what `gh --with-token` and `docker --password-stdin` do.
+ */
+private fun orStdin(value: String, what: String): String {
+    if (value != "-") return value
+    return readlnOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+        ?: throw AuthError("No $what arrived on stdin.")
 }
 
 private const val GITHUB_SKIPPED =

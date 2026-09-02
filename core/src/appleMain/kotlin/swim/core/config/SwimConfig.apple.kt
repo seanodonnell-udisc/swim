@@ -29,7 +29,9 @@ internal actual fun writePrivateFile(path: String, text: String) {
     val manager = NSFileManager.defaultManager
     val directory = path.substringBeforeLast('/', "")
     if (directory.isNotEmpty()) {
-        manager.createDirectoryAtPath(directory, true, null, null)
+        // The desktop app may put tokens.json here. Other users may not even list the directory.
+        val directoryAttributes = mapOf<Any?, Any?>(NSFilePosixPermissions to OWNER_ONLY_DIRECTORY)
+        manager.createDirectoryAtPath(directory, true, directoryAttributes, null)
     }
     val attributes = mapOf<Any?, Any?>(NSFilePosixPermissions to OWNER_ONLY)
     manager.createFileAtPath(path, text.encodeToByteArray().toNSData(), attributes)
@@ -37,6 +39,7 @@ internal actual fun writePrivateFile(path: String, text: String) {
 }
 
 private const val OWNER_ONLY = 384 // 0600
+private const val OWNER_ONLY_DIRECTORY = 448 // 0700
 
 private fun ByteArray.toNSData(): NSData {
     if (isEmpty()) return NSData()

@@ -36,6 +36,38 @@ class SwimConfigJvmTest {
     }
 
     @Test
+    fun theDirectoryHoldingTheTokensIsClosedToOtherUsers() {
+        val path = tempConfig()
+        saveConfig(SwimConfig(), path)
+
+        assertEquals(
+            setOf(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE,
+            ),
+            Files.getPosixFilePermissions(File(path).parentFile.toPath()),
+        )
+    }
+
+    @Test
+    fun aRewriteRestoresTheOwnerOnlyMode() {
+        val path = tempConfig()
+        saveConfig(SwimConfig(), path)
+        Files.setPosixFilePermissions(
+            File(path).toPath(),
+            setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OTHERS_READ),
+        )
+
+        saveConfig(SwimConfig(repos = listOf("/code/app")), path)
+
+        assertEquals(
+            setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+            Files.getPosixFilePermissions(File(path).toPath()),
+        )
+    }
+
+    @Test
     fun aMissingOrCorruptFileYieldsTheDefaults() {
         val path = tempConfig()
         assertEquals(SwimConfig(), loadConfig(path))

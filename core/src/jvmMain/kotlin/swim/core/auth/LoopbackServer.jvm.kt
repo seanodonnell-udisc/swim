@@ -21,6 +21,9 @@ class LoopbackServer(port: Int = 0, private val path: String = "/callback") : Au
     /** The port the OS assigned. Register this in the authorize request. */
     val port: Int get() = server.address.port
 
+    /** The address the socket really bound. The authorization code must not leave this machine. */
+    internal val boundAddress: InetAddress get() = server.address.address
+
     /** The redirect URI to send to Linear. */
     val redirectUri: String get() = "http://127.0.0.1:$port$path"
 

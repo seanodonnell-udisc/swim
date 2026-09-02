@@ -2,10 +2,12 @@
 
 package swim.core.auth
 
+import swim.core.model.AuthError
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Clock
@@ -62,6 +64,34 @@ class JvmTokenStoreTest {
 
         File(path).writeText("not json")
         assertNull(store(path).getLinear())
+    }
+
+    @Test
+    fun theSecretReachesSecurityOnStdinAndNeverInArgv() {
+        val secret = "lin_oauth_super_secret"
+
+        assertEquals(listOf("/usr/bin/security", "-i"), SECURITY_STDIN_ARGV)
+        assertTrue(SECURITY_STDIN_ARGV.none { it.contains(secret) })
+        assertTrue(keychainWriteCommand(LINEAR_KEY, secret).contains(secret), "stdin carries it")
+    }
+
+    @Test
+    fun theKeychainCommandQuotesEveryArgumentTheParserWouldSplit() {
+        // `security -i` splits on spaces and drops a backslash before any character.
+        assertEquals(
+            """add-generic-password -U -s "swim" -a "swim.linear" -w "{\"a\":\"b c\\\\d\"}"""",
+            keychainWriteCommand(LINEAR_KEY, """{"a":"b c\\d"}"""),
+        )
+    }
+
+    @Test
+    fun aKeychainThatRefusesTheWriteDoesNotPutTheSecretOnDisk() {
+        val path = tempTokens()
+        val store = JvmTokenStore(filePath = path, useKeychain = true, keychainWrite = { false })
+
+        assertFailsWith<AuthError> { store.setLinear(LinearTokens("lin_at", "lin_rt")) }
+
+        assertTrue(!File(path).exists(), "a locked keychain must not divert the token to a file")
     }
 
     @Test

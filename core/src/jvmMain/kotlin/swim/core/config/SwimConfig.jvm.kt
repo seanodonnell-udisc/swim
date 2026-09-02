@@ -23,15 +23,24 @@ internal actual fun readFileOrNull(path: String): String? = try {
 
 internal actual fun writePrivateFile(path: String, text: String) {
     val file = File(path)
-    file.parentFile?.mkdirs()
+    file.parentFile?.let {
+        it.mkdirs()
+        // The directory holds tokens.json. Other users of this machine may not even list it.
+        restrict(it, PosixFilePermission.OWNER_EXECUTE)
+    }
     if (!file.exists()) file.createNewFile()
+    restrict(file)
+    file.writeText(text)
+}
+
+/** Gives the owner read and write, plus `extra`, and gives nobody else anything. */
+private fun restrict(target: File, vararg extra: PosixFilePermission) {
     try {
         Files.setPosixFilePermissions(
-            file.toPath(),
-            setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+            target.toPath(),
+            setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, *extra),
         )
     } catch (e: Exception) {
         // Not a POSIX filesystem. The content still has to be written.
     }
-    file.writeText(text)
 }
