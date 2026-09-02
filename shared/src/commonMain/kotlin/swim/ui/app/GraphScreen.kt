@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import swim.core.auth.LinearAuthMode
@@ -61,6 +62,7 @@ import swim.core.model.SwimError
 import swim.core.session.AuthStatus
 import swim.core.session.GraphGrouping
 import swim.core.session.GraphState
+import swim.core.session.PR_STATUS_TTL
 import swim.core.session.RelationChange
 import swim.core.session.reconcile
 import swim.core.url.resolveLinearUrl
@@ -175,6 +177,19 @@ internal fun GraphScreen(
                 holder.filters.setFilters(it)
                 holder.filters.applyFilters()
             }
+        }
+    }
+
+    // Pull requests move while Linear stands still: one merges, one is retargeted, two issues
+    // fold onto one branch. The session re-asks GitHub on every tick and re-emits the graph only
+    // when the answer differs, so an unchanged minute costs one request and moves no card.
+    LaunchedEffect(graphState is GraphState.Loaded, status.githubConfigured, derivePr) {
+        if (graphState !is GraphState.Loaded || !status.githubConfigured || !derivePr) {
+            return@LaunchedEffect
+        }
+        while (true) {
+            delay(PR_STATUS_TTL)
+            holder.session.refreshPrStatuses()
         }
     }
 
@@ -303,6 +318,7 @@ internal fun GraphScreen(
             derivePr = derivePr,
             onDerivePr = holder.session::setDerivePrRelations,
             githubConnected = status.githubConfigured,
+            onConnectGithub = { githubDialog = true },
             showCrossLinks = showCrossLinks,
             onShowCrossLinks = { showCrossLinks = it },
             urlSource = filterState.urlSource,
@@ -487,13 +503,25 @@ internal fun GraphScreen(
     if (githubDialog) {
         Box(
             modifier = Modifier.fillMaxSize().background(Swim.Bg.copy(alpha = 0.85f))
-                .clickable { githubDialog = false },
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { githubDialog = false },
             contentAlignment = Alignment.Center,
         ) {
-            Box(Modifier.width(460.dp)) {
-                GithubCard(env, scope) {
+            Box(
+                // The card is not a click target, so without this the backdrop takes every click
+                // that lands between its controls and closes the dialog under the pointer.
+                Modifier.width(460.dp).clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {},
+            ) {
+                GithubCard(env, scope, dismissLabel = "Cancel") {
                     githubDialog = false
                     onAuthChanged()
+                    // The graph is already loaded. The new token only owes it the pull requests.
+                    holder.session.refreshPrStatuses()
                 }
             }
         }
@@ -514,6 +542,7 @@ private fun ViewToolbar(
     derivePr: Boolean,
     onDerivePr: (Boolean) -> Unit,
     githubConnected: Boolean,
+    onConnectGithub: () -> Unit,
     showCrossLinks: Boolean,
     onShowCrossLinks: (Boolean) -> Unit,
     urlSource: String?,
@@ -555,14 +584,15 @@ private fun ViewToolbar(
         )
         SwimCheckbox("Related edges", showRelated, onShowRelated)
         SwimCheckbox("Duplicates", showDuplicates, onShowDuplicates)
-        // Without a GitHub token there are no pull requests to read, so the box says so instead
-        // of standing there ticked over a graph that can never carry a derived edge.
+        // Without a GitHub token there are no pull requests to read. The box then offers the
+        // connect dialog, because a user who already had Linear never sees the login card.
         SwimCheckbox(
             label = "Derive relations from PR stacks",
             checked = derivePr && githubConnected,
             onCheckedChange = onDerivePr,
             enabled = githubConnected,
-            hint = if (githubConnected) null else "Connect GitHub to derive relations from PRs",
+            hint = if (githubConnected) null else "Click to connect GitHub",
+            onDisabledClick = onConnectGithub,
         )
         // Only milestone areas hide their crossings, so only that mode offers the switch.
         if (groupBy == GraphGrouping.MILESTONE) {

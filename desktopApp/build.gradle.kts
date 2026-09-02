@@ -22,7 +22,11 @@ kotlin {
 tasks.register<JavaExec>("shot") {
     mainClass.set("swim.desktop.ShotKt")
     classpath = sourceSets["main"].runtimeClasspath
-    args = listOf(project.findProperty("swim.shot.out") as String? ?: "build/shots")
+    args = listOfNotNull(
+        project.findProperty("swim.shot.out") as String? ?: "build/shots",
+        // -Pswim.shot.only=connect writes only the shots whose name carries that word.
+        project.findProperty("swim.shot.only") as String?,
+    )
 }
 
 // `run` and `shot` both take -Pswim.dev.autoload and -Pswim.insecureStorage.

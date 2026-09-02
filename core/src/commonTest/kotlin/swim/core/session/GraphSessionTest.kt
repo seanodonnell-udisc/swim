@@ -328,6 +328,59 @@ class GraphSessionTest {
     }
 
     @Test
+    fun aRefreshThatFindsNewPullRequestStateReshapesTheLoadedGraph() = runTest(UnconfinedTestDispatcher()) {
+        val github = HttpRecorder(
+            Canned(UNSTACKED_PR_STATUS),
+            Canned(STACKED_PR_STATUS),
+            Canned(SHARED_BRANCH_PR_STATUS),
+        )
+        val f = fixture(Canned(STACKED_PAGE), github = GithubClient(github.client) { "gho_token" })
+        val states = f.collectGraph()
+
+        f.store.applyFilters()
+        f.await { states.last() is GraphState.Loaded }
+        val first = assertIs<GraphState.Loaded>(states.last())
+        assertTrue(first.data.edges.isEmpty())
+        assertTrue(first.data.stacks.isEmpty())
+
+        // Pull request 8 is retargeted onto pull request 7's branch: ENG-1 now blocks ENG-2.
+        f.session.refreshPrStatuses()
+        f.await { states.size == 4 }
+        assertEquals(
+            listOf(IssueEdge("ENG-1", "ENG-2", RelationType.BLOCKS, provenance = EdgeProvenance.PR_DERIVED)),
+            assertIs<GraphState.Loaded>(states.last()).data.edges,
+        )
+
+        // Then both pull requests land on one branch, so the two issues become one stack.
+        f.session.refreshPrStatuses()
+        f.await { states.size == 5 }
+        val stacked = assertIs<GraphState.Loaded>(states.last())
+        assertEquals(listOf(setOf("ENG-1", "ENG-2")), stacked.data.stacks)
+        assertTrue(stacked.data.edges.isEmpty())
+
+        // Linear was asked one time. Only GitHub was asked again.
+        assertEquals(1, f.graphRequests)
+        assertEquals(3, github.requests.size)
+    }
+
+    @Test
+    fun aRefreshThatFindsTheSamePullRequestStateEmitsNothing() = runTest(UnconfinedTestDispatcher()) {
+        val github = HttpRecorder(Canned(STACKED_PR_STATUS))
+        val f = fixture(Canned(STACKED_PAGE), github = GithubClient(github.client) { "gho_token" })
+        val states = f.collectGraph()
+
+        f.store.applyFilters()
+        f.await { states.last() is GraphState.Loaded }
+        val emitted = states.size
+
+        f.session.refreshPrStatuses()
+        f.await { github.requests.size == 2 }
+        f.settle()
+
+        assertEquals(emitted, states.size, "an unchanged refresh moved the cards")
+    }
+
+    @Test
     fun withoutGithubTheGraphCarriesOnlyTheLinearRelations() = runTest(UnconfinedTestDispatcher()) {
         val f = fixture(Canned(STACKED_PAGE))
         val states = f.collectGraph()
@@ -556,6 +609,11 @@ private const val STACKED_PAGE = """{"data":{"issues":{"nodes":[
    "attachments":{"nodes":[{"url":"https://github.com/acme/app/pull/8","title":"On top"}]},
    "relations":{"nodes":[]},"inverseRelations":{"nodes":[]}}
 ],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}"""
+
+// Two pull requests off main. Neither implies anything about the other.
+private const val UNSTACKED_PR_STATUS = """{"data":{
+  "pr0":{"pullRequest":{"headRefName":"feat-a","baseRefName":"main","commits":{"nodes":[]}}},
+  "pr1":{"pullRequest":{"headRefName":"feat-b","baseRefName":"main","commits":{"nodes":[]}}}}}"""
 
 // Pull request 8 starts from pull request 7's branch, so ENG-1 blocks ENG-2.
 private const val STACKED_PR_STATUS = """{"data":{

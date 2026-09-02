@@ -42,6 +42,7 @@ import java.io.File
 @OptIn(ExperimentalComposeUiApi::class, InternalComposeUiApi::class)
 fun main(args: Array<String>) {
     val outDir = File(args.firstOrNull() ?: ".").also { it.mkdirs() }
+    only = args.getOrNull(1)
     val http = HttpClient(OkHttp)
     val autoload = System.getProperty("swim.dev.autoload")
     val savedFilters = Settings().getStringOrNull(FILTERS)
@@ -50,8 +51,8 @@ fun main(args: Array<String>) {
     // Its own file store. The settings-backed fallback caps a value at 8 KB, which a real
     // graph's layout passes, and the shots must not write the running app's positions either.
     val positions = java.nio.file.Files.createTempFile("swim-shot-positions", ".json")
-    fun graphEnv(commands: AppCommands = AppCommands()) = SwimEnv(
-        http, tokenStore(), Settings(), scope(), config = loadConfig(),
+    fun graphEnv(commands: AppCommands = AppCommands(), tokens: TokenStore = tokenStore()) = SwimEnv(
+        http, tokens, Settings(), scope(), config = loadConfig(),
         commands = commands, devAutoload = autoload, log = Log::line,
         positionStore = FilePositionStore(positions),
     )
@@ -123,6 +124,14 @@ fun main(args: Array<String>) {
         atFrame = 50 to { _ -> relayout.send(AppCommand.RELAYOUT) },
     )
 
+    // The GitHub connect dialog, opened from the derive toggle. It needs credentials that hold
+    // Linear but not GitHub, which is the state the dialog exists for.
+    shoot(
+        outDir, "p3g-shot-connect-github.png", 70,
+        graphEnv(tokens = GithublessTokenStore(tokenStore())),
+        atFrame = 50 to { scene -> scene.click(DERIVE_TOGGLE) },
+    )
+
     // The pile of stacked cards and the PR-derived edge, off the preview graph. The live
     // workspace has no stacked pull requests, so this is the only place they can be reviewed.
     shootCanvas(outDir, "p3f-shot-stack.png") { scene, state ->
@@ -153,6 +162,7 @@ private fun shootCanvas(
     name: String,
     stage: (ImageComposeScene, GraphCanvasState) -> Unit,
 ) {
+    if (!wanted(name)) return
     lateinit var state: GraphCanvasState
     val scene = ImageComposeScene(width = WIDTH, height = HEIGHT, density = Density(1f)) {
         state = rememberGraphCanvasState()
@@ -194,6 +204,7 @@ private fun shoot(
     env: SwimEnv,
     atFrame: Pair<Int, (ImageComposeScene) -> Unit>? = null,
 ) {
+    if (!wanted(name)) return
     val scene = ImageComposeScene(width = WIDTH, height = HEIGHT, density = Density(1f)) {
         SwimApp(env)
     }
@@ -304,6 +315,14 @@ private fun milestone(saved: String?) {
 /** The "Cross-milestone links" checkbox, last in the view toolbar before the counts. */
 private val CROSS_TOGGLE = Offset(1180f, 73f)
 
+/** The "Derive relations from PR stacks" checkbox. Read off p3f-shot-live.png. */
+private val DERIVE_TOGGLE = Offset(1150f, 73f)
+
+/** Names only one shot, or null for all of them. */
+private var only: String? = null
+
+private fun wanted(name: String): Boolean = only?.let { name.contains(it) } != false
+
 /** Inside the second area's label band. Read off the default milestone shot. */
 private val SECOND_LABEL = Offset(445f, 139f)
 
@@ -316,6 +335,11 @@ private const val FILTERS = "swim.filters"
 private const val SEEN_SHORTCUTS = "swim.seenShortcuts"
 
 private fun scope() = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+/** The real credentials with GitHub removed, so the connect dialog has something to connect. */
+private class GithublessTokenStore(inner: TokenStore) : TokenStore by inner {
+    override fun getGithub(): String? = null
+}
 
 private object EmptyTokenStore : TokenStore {
     override fun getLinear(): LinearTokens? = null

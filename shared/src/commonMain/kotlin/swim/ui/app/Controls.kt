@@ -275,8 +275,9 @@ internal fun SwimTextField(
 private val MaskedText = androidx.compose.ui.text.input.PasswordVisualTransformation('•')
 
 /**
- * A checkbox drawn as a glyph, so it matches the 11sp chrome. A disabled box takes no click and
- * says why in [hint] on hover.
+ * A checkbox drawn as a glyph, so it matches the 11sp chrome. A disabled box says why in [hint]
+ * on hover. [onDisabledClick] makes that hint an offer: the click then does what the hint asks
+ * instead of doing nothing.
  */
 @Composable
 internal fun SwimCheckbox(
@@ -286,6 +287,7 @@ internal fun SwimCheckbox(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     hint: String? = null,
+    onDisabledClick: (() -> Unit)? = null,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
@@ -294,7 +296,9 @@ internal fun SwimCheckbox(
             modifier = Modifier
                 .heightIn(min = ControlHeight)
                 .hoverable(interaction)
-                .clickable(enabled = enabled) { onCheckedChange(!checked) }
+                .clickable(enabled = enabled || onDisabledClick != null) {
+                    if (enabled) onCheckedChange(!checked) else onDisabledClick?.invoke()
+                }
                 .padding(horizontal = 6.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp),

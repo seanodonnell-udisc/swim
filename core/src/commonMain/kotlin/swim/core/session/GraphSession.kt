@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -33,6 +34,7 @@ import swim.core.model.SwimError
 import swim.layout.Position
 import swim.layout.PositionSnapshot
 import kotlin.time.Clock
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
@@ -97,6 +99,11 @@ class GraphSession(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
 
+    private val prRefreshes = MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+
     private val _showRelatedEdges = MutableStateFlow(true)
     private val _showDuplicates = MutableStateFlow(false)
     private val _derivePrRelations = MutableStateFlow(true)
@@ -120,27 +127,7 @@ class GraphSession(
      */
     val graph: StateFlow<GraphState> by lazy {
         triggers
-            .transformLatest { filters ->
-                emit(GraphState.Loading)
-                emit(
-                    try {
-                        val data = client.getIssuesWithRelations(filters)
-                        // The pull-request answer must arrive before Loaded. The placement pass
-                        // runs on the first graph it gets, and an edge that lands after it moves
-                        // cards the user is already reading.
-                        val statuses = fetchPrStatuses(data)
-                        GraphState.Loaded(withPrRelations(data, statuses), filters, statuses)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: SwimError) {
-                        GraphState.Error(e)
-                    } catch (e: Exception) {
-                        // Anything unexpected would escape stateIn, and WhileSubscribed never
-                        // restarts a failed sharing coroutine: the graph would freeze for good.
-                        GraphState.Error(ApiError("Linear could not answer: ${e.message}"))
-                    }
-                )
-            }
+            .transformLatest { filters -> loadAndFollow(filters) }
             .stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), GraphState.NotLoaded)
     }
 
@@ -195,6 +182,14 @@ class GraphSession(
         reloads.tryEmit(Unit)
     }
 
+    /**
+     * Asks GitHub about the loaded graph's pull requests again, without asking Linear. The graph
+     * only emits again if the answer differs. It costs nothing while no graph is loaded.
+     */
+    fun refreshPrStatuses() {
+        prRefreshes.tryEmit(Unit)
+    }
+
     /** Draws or hides `related` edges. Duplicates are not affected. */
     fun setShowRelatedEdges(show: Boolean) {
         _showRelatedEdges.value = show
@@ -208,6 +203,8 @@ class GraphSession(
     /** Draws or hides the relations the pull-request stacks imply. No load is necessary. */
     fun setDerivePrRelations(derive: Boolean) {
         _derivePrRelations.value = derive
+        // Turning it on draws relations from an answer that may be a minute old, so ask again.
+        if (derive) refreshPrStatuses()
     }
 
     /** Creates `from <type> to` and reloads. Returns the new relation id. */
@@ -260,17 +257,60 @@ class GraphSession(
     }
 
     /**
+     * One Linear load, then the pull requests for as long as this graph is the current one.
+     *
+     * Pull requests move while Linear stands still: one merges, one is retargeted, two issues
+     * fold onto one branch. So the block stays alive after the load and asks GitHub again on
+     * every [refreshPrStatuses]. `transformLatest` cancels the whole block on the next trigger,
+     * and the sharing coroutine ends it when the last collector goes, so the follow-up can never
+     * outlive the graph it belongs to.
+     */
+    private suspend fun FlowCollector<GraphState>.loadAndFollow(filters: FilterOptions) {
+        emit(GraphState.Loading)
+        val data = try {
+            client.getIssuesWithRelations(filters)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: SwimError) {
+            emit(GraphState.Error(e))
+            return
+        } catch (e: Exception) {
+            // Anything unexpected would escape stateIn, and WhileSubscribed never restarts a
+            // failed sharing coroutine: the graph would freeze for good.
+            emit(GraphState.Error(ApiError("Linear could not answer: ${e.message}")))
+            return
+        }
+
+        // The pull-request answer must arrive before Loaded. The placement pass runs on the first
+        // graph it gets, and an edge that lands after it moves cards the user is already reading.
+        var statuses = fetchPrStatuses(data)
+        emit(GraphState.Loaded(withPrRelations(data, statuses), filters, statuses))
+
+        if (github == null || prUrlsOf(data).isEmpty()) return
+        prRefreshes.collect {
+            val fresh = fetchPrStatuses(data, force = true)
+            // The derived edges and the stacks are a pure function of the graph and the statuses,
+            // so the same answer means the same value. Emitting it would re-run the placement
+            // pass over cards that have not moved.
+            if (fresh == statuses) return@collect
+            statuses = fresh
+            emit(GraphState.Loaded(withPrRelations(data, fresh), filters, fresh))
+        }
+    }
+
+    /**
      * The statuses for one loaded graph. Never throws and never waits without an end: GitHub is an
      * overlay, so every failure degrades to the last good answer, and the graph loads regardless.
+     * [force] is for a refresh that must ask, such as the one a new GitHub token earns.
      */
-    private suspend fun fetchPrStatuses(data: GraphData): Map<String, PrStatus> {
+    private suspend fun fetchPrStatuses(data: GraphData, force: Boolean = false): Map<String, PrStatus> {
         if (github == null) return emptyMap()
-        val urls = data.nodes.flatMap { it.pullRequests.orEmpty() }.map { it.url }.distinct().sorted()
+        val urls = prUrlsOf(data)
         if (urls.isEmpty()) return emptyMap()
 
         val previous = lastPrFetch
         val now = Clock.System.now()
-        if (previous != null && previous.first == urls && now - previous.second < PR_STATUS_TTL) {
+        if (!force && previous != null && previous.first == urls && now - previous.second < PR_STATUS_TTL) {
             return lastPrStatuses
         }
 
@@ -310,9 +350,17 @@ internal fun project(
     }
 }
 
+/** Every pull request the graph links to, in the order the batched GitHub query wants them. */
+private fun prUrlsOf(data: GraphData): List<String> =
+    data.nodes.flatMap { it.pullRequests.orEmpty() }.map { it.url }.distinct().sorted()
+
 private val EMPTY_GRAPH = GraphData(nodes = emptyList(), edges = emptyList())
 
-private val PR_STATUS_TTL = 60.seconds
+/**
+ * How long one pull-request answer is good for. It suppresses a second ask inside the window, and
+ * it is the cadence a surface must re-ask on. One interval, one place to change it.
+ */
+val PR_STATUS_TTL: Duration = 60.seconds
 
 // Long enough that a configuration change does not drop the graph and reload it.
 private const val STOP_TIMEOUT_MS = 5_000L

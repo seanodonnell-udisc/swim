@@ -91,7 +91,10 @@ fun SwimApp(env: SwimEnv) {
         if (!status.configured) {
             LoginScreen(env) { status = authStatus(env.tokenStore) }
         } else {
-            val session = remember(status) { buildSession(env) }
+            // Keyed on the Linear credential, not on the whole status: connecting GitHub mid
+            // session must not build a new session and drop the graph the user is reading. The
+            // GithubClient reads the stored token per call, so it needs no rebuild.
+            val session = remember(status.mode) { buildSession(env) }
             GraphScreen(env, session, status) { status = authStatus(env.tokenStore) }
         }
     }

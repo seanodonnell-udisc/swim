@@ -14,28 +14,32 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-private const val HINT = "Connect GitHub to derive relations from PRs"
+private const val HINT = "Click to connect GitHub"
 private val ON_THE_BOX = Offset(60f, 14f)
 private val OFF_THE_BOX = Offset(300f, 110f)
 
 /**
  * The view toolbar's "Derive relations from PR stacks" box. Without a GitHub token there are no
- * pull requests to read, so the box must refuse the click and say why.
+ * pull requests to read, so the box must say why, and offer the connect dialog instead of the
+ * change it cannot make.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 class ViewToggleTest {
 
     private val log = mutableListOf<Boolean>()
+    private var connects = 0
 
-    private fun scene(enabled: Boolean) = ImageComposeScene(340, 130, Density(1f)) {
-        SwimCheckbox(
-            label = "Derive relations from PR stacks",
-            checked = enabled,
-            onCheckedChange = { log += it },
-            enabled = enabled,
-            hint = if (enabled) null else HINT,
-        )
-    }
+    private fun scene(enabled: Boolean, offersConnect: Boolean = false) =
+        ImageComposeScene(340, 130, Density(1f)) {
+            SwimCheckbox(
+                label = "Derive relations from PR stacks",
+                checked = enabled,
+                onCheckedChange = { log += it },
+                enabled = enabled,
+                hint = if (enabled) null else HINT,
+                onDisabledClick = if (offersConnect) ({ connects++ }) else null,
+            )
+        }
 
     @Test
     fun theToggleIsDeadAndHintedWithoutGithub() {
@@ -46,10 +50,11 @@ class ViewToggleTest {
             click(scene, ON_THE_BOX)
             assertEquals(emptyList(), log, "a disabled toggle reported a change")
 
-            // The pointer is still resting on it, so the hint is up.
+            // The pointer is still resting on it, so the hint is up. Only the outline and the
+            // glyphs differ: the hint fills with the page color it is drawn over.
             val hinted = pixels(scene)
             assertTrue(
-                idle.indices.count { idle[it] != hinted[it] } > 400,
+                idle.indices.count { idle[it] != hinted[it] } > 200,
                 "the disabled toggle drew no hint on hover",
             )
 
@@ -57,6 +62,20 @@ class ViewToggleTest {
             scene.sendPointerEvent(PointerEventType.Move, OFF_THE_BOX)
             scene.render()
             assertEquals(idle.toList(), pixels(scene).toList(), "the hint outlived the hover")
+        } finally {
+            scene.close()
+        }
+    }
+
+    @Test
+    fun theDisabledToggleOpensTheConnectDialog() {
+        val scene = scene(enabled = false, offersConnect = true)
+        try {
+            scene.render()
+            click(scene, ON_THE_BOX)
+
+            assertEquals(emptyList(), log, "the disabled toggle reported a change")
+            assertEquals(1, connects, "the disabled toggle did not offer the connect dialog")
         } finally {
             scene.close()
         }

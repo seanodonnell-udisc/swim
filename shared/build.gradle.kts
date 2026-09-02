@@ -47,6 +47,8 @@ kotlin {
         jvmTest.dependencies {
             // ImageComposeScene renders the canvas headlessly.
             implementation(compose.desktop.currentOs)
+            implementation(libs.ktor.client.mock)
+            implementation(libs.kotlinx.coroutines.test)
         }
     }
 }

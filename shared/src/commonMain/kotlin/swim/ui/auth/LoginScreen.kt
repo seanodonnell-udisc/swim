@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.ktor.client.HttpClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -39,6 +40,7 @@ import swim.core.auth.GithubDeviceFlow
 import swim.core.auth.LinearAuthMode
 import swim.core.auth.LinearTokens
 import swim.core.auth.OAuthApps
+import swim.core.auth.TokenStore
 import swim.core.github.GithubClient
 import swim.core.linear.LinearClient
 import swim.core.linear.apiKeyAuth
@@ -83,7 +85,7 @@ fun LoginScreen(env: SwimEnv, onDone: () -> Unit) {
                 Card("Linear") {
                     StatusLine("Signed in as $linearName", Swim.Green)
                 }
-                GithubCard(env, scope, onDone)
+                GithubCard(env, scope, onDone = onDone)
             }
         }
     }
@@ -189,9 +191,27 @@ private fun LinearCard(env: SwimEnv, scope: CoroutineScope, onSignedIn: (String)
     }
 }
 
-/** The GitHub card: the device flow when an OAuth app exists, a pasted token at all times. */
+/**
+ * Confirms a GitHub token works and stores it. Returns the account name for the "Connected as"
+ * line. The caller then refreshes the auth status, because the graph reads the store, not this.
+ */
+internal suspend fun connectGithub(http: HttpClient, tokenStore: TokenStore, token: String): String {
+    val login = GithubClient(http) { token }.verifyToken()
+    tokenStore.setGithub(token)
+    return login
+}
+
+/**
+ * The GitHub card: the device flow when an OAuth app exists, a pasted token at all times. The
+ * graph shows the same card over itself, where [dismissLabel] reads "Cancel" instead of "Skip".
+ */
 @Composable
-internal fun GithubCard(env: SwimEnv, scope: CoroutineScope, onDone: () -> Unit) {
+internal fun GithubCard(
+    env: SwimEnv,
+    scope: CoroutineScope,
+    dismissLabel: String = "Skip",
+    onDone: () -> Unit,
+) {
     var code by remember { mutableStateOf<GithubDeviceCode?>(null) }
     var token by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -203,8 +223,7 @@ internal fun GithubCard(env: SwimEnv, scope: CoroutineScope, onDone: () -> Unit)
         busy = true
         scope.launch {
             try {
-                login = GithubClient(env.http) { value }.verifyToken()
-                env.tokenStore.setGithub(value)
+                login = connectGithub(env.http, env.tokenStore, value)
                 onDone()
             } catch (e: CancellationException) {
                 throw e
@@ -298,12 +317,12 @@ internal fun GithubCard(env: SwimEnv, scope: CoroutineScope, onDone: () -> Unit)
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "Skip to leave pull-request status out of the graph.",
+                text = "Pull-request status stays out of the graph until you connect GitHub.",
                 color = Swim.TextMuted,
                 fontSize = 11.sp,
                 modifier = Modifier.weight(1f),
             )
-            SwimButton("Skip", onDone)
+            SwimButton(dismissLabel, onDone)
         }
     }
 }
