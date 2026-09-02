@@ -269,7 +269,9 @@ fun GraphCanvas(
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 36.dp),
         )
 
-        ModeToggle(state, Modifier.align(Alignment.TopStart).padding(12.dp))
+        // Bottom left, clear of the group labels. An area's label band sits above its first
+        // card, so a top-left toggle covers the first label whenever the graph is fitted.
+        ModeToggle(state, Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 36.dp))
         HintBar(state, selection.size, Modifier.align(Alignment.BottomCenter))
         if (state.pick != null) PickHint(Modifier.align(Alignment.TopCenter))
 

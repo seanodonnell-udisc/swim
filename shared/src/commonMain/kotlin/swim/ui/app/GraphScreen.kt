@@ -4,6 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,8 +16,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Text
@@ -21,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -30,13 +37,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
-import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -51,12 +64,14 @@ import swim.core.session.GraphState
 import swim.core.session.RelationChange
 import swim.core.session.reconcile
 import swim.core.url.resolveLinearUrl
+import swim.layout.Position
 import swim.layout.PositionSnapshot
 import swim.ui.auth.GithubCard
 import swim.ui.filters.FilterToolbar
 import swim.ui.filters.LinearUrlInput
 import swim.ui.filters.ReferenceData
 import swim.ui.filters.availablesOf
+import swim.ui.graph.CanvasMode
 import swim.ui.graph.EdgeKey
 import swim.ui.graph.GraphCanvas
 import swim.ui.graph.GraphCanvasCallbacks
@@ -102,7 +117,15 @@ internal fun GraphScreen(
     var urlError by remember { mutableStateOf<String?>(null) }
     var githubDialog by remember { mutableStateOf(false) }
     var relayouts by remember { mutableStateOf(0) }
+    var showCrossLinks by remember { mutableStateOf(false) }
+    var areaDrag by remember { mutableStateOf(Offset.Zero) }
     val canvasState = rememberGraphCanvasState()
+
+    // Milestone areas hide their crossings until the view toolbar asks for them.
+    val drawn = remember(projected, filterState.groupBy, showCrossLinks) {
+        if (filterState.groupBy != GraphGrouping.MILESTONE || showCrossLinks) projected
+        else withoutCrossGroupEdges(projected, filterState.groupBy)
+    }
 
     val availables = remember(reference, filterState.filters) {
         availablesOf(reference, filterState.filters)
@@ -262,7 +285,7 @@ internal fun GraphScreen(
         Divider()
 
         ViewToolbar(
-            counts = "${projected.nodes.size} issues, ${projected.edges.size} relations",
+            counts = "${drawn.nodes.size} issues, ${drawn.edges.size} relations",
             prStatusFailed = prStatusFailed,
             groupBy = filterState.groupBy,
             onGroupBy = holder.filters::setGroupBy,
@@ -270,6 +293,8 @@ internal fun GraphScreen(
             onShowRelated = holder.session::setShowRelatedEdges,
             showDuplicates = showDuplicates,
             onShowDuplicates = holder.session::setShowDuplicates,
+            showCrossLinks = showCrossLinks,
+            onShowCrossLinks = { showCrossLinks = it },
             urlSource = filterState.urlSource,
             onDismissUrlSource = holder.filters::dismissUrlSource,
             urlResolving = urlResolving,
@@ -324,7 +349,7 @@ internal fun GraphScreen(
                 )
 
                 else -> GraphCanvas(
-                    graph = projected,
+                    graph = drawn,
                     positions = placement.positions,
                     modifier = Modifier.fillMaxSize(),
                     readySet = readySet,
@@ -392,7 +417,34 @@ internal fun GraphScreen(
                         },
                         onReload = { holder.session.reload() },
                     ),
-                    underlay = { GroupUnderlay(placement.groups) },
+                    underlay = {
+                        GroupUnderlay(
+                            groups = placement.groups,
+                            // Interact gives every left drag to the pan, labels included, so the
+                            // area drag is an Arrange tool and only shows its grip there.
+                            draggable = canvasState.mode == CanvasMode.ARRANGE,
+                            onDrag = { label, delta ->
+                                areaDrag += delta
+                                val ids = idsIn(projected, filterState.groupBy, label)
+                                val moved = moveGroup(placement.positions, ids, delta)
+                                placement = placement.copy(positions = moved)
+                                    .let { it.copy(groups = groupBoxesOf(projected, filterState.groupBy, moved)) }
+                            },
+                            onDragEnd = { label ->
+                                val stored = holder.positions.get()
+                                    .byKey[holder.session.layoutCacheKey()].orEmpty()[groupOffsetKey(label)]
+                                holder.session.savePositions(
+                                    placement.positions + (
+                                        groupOffsetKey(label) to Position(
+                                            (stored?.x ?: 0f) + areaDrag.x,
+                                            (stored?.y ?: 0f) + areaDrag.y,
+                                        )
+                                        ),
+                                )
+                                areaDrag = Offset.Zero
+                            },
+                        )
+                    },
                 )
             }
         }
@@ -450,6 +502,8 @@ private fun ViewToolbar(
     onShowRelated: (Boolean) -> Unit,
     showDuplicates: Boolean,
     onShowDuplicates: (Boolean) -> Unit,
+    showCrossLinks: Boolean,
+    onShowCrossLinks: (Boolean) -> Unit,
     urlSource: String?,
     onDismissUrlSource: () -> Unit,
     urlResolving: Boolean,
@@ -471,6 +525,7 @@ private fun ViewToolbar(
                 SwimOption("team", "Team"),
                 SwimOption("project", "Project"),
                 SwimOption("label", "Label"),
+                SwimOption("milestone", "Milestone"),
             ),
             onSelect = { value ->
                 onGroupBy(
@@ -478,6 +533,7 @@ private fun ViewToolbar(
                         "team" -> GraphGrouping.TEAM
                         "project" -> GraphGrouping.PROJECT
                         "label" -> GraphGrouping.LABEL
+                        "milestone" -> GraphGrouping.MILESTONE
                         else -> GraphGrouping.NONE
                     }
                 )
@@ -487,6 +543,10 @@ private fun ViewToolbar(
         )
         SwimCheckbox("Related edges", showRelated, onShowRelated)
         SwimCheckbox("Duplicates", showDuplicates, onShowDuplicates)
+        // Only milestone areas hide their crossings, so only that mode offers the switch.
+        if (groupBy == GraphGrouping.MILESTONE) {
+            SwimCheckbox("Cross-milestone links", showCrossLinks, onShowCrossLinks)
+        }
         // A PR chip with no badge otherwise reads as "no reviews and no checks".
         if (prStatusFailed) Text("PR status unavailable", color = Swim.Amber, fontSize = 11.sp)
         Text(counts, color = Swim.TextMuted, fontSize = 11.sp)
@@ -545,9 +605,14 @@ private fun MenuItem(text: String, onClick: () -> Unit) {
  * outline is wider than the viewport, and a laid-out box would be measured against it.
  */
 @Composable
-private fun GroupUnderlay(groups: List<GroupBox>) {
+internal fun GroupUnderlay(
+    groups: List<GroupBox>,
+    draggable: Boolean = false,
+    onDrag: (label: String, delta: Offset) -> Unit = { _, _ -> },
+    onDragEnd: (label: String) -> Unit = {},
+) {
     if (groups.isEmpty()) return
-    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current.density
     Canvas(Modifier.fillMaxSize()) {
         // Canvas units are dp; this draw scope is pixels.
         groups.forEach { group ->
@@ -556,11 +621,74 @@ private fun GroupUnderlay(groups: List<GroupBox>) {
             val radius = CornerRadius(10f * density)
             drawRoundRect(Swim.Card.copy(alpha = 0.5f), topLeft, size, radius)
             drawRoundRect(Swim.Border, topLeft, size, radius, style = Stroke(1f * density))
-            drawText(
-                textLayoutResult = measurer.measure(group.label, GROUP_LABEL_STYLE),
-                topLeft = topLeft + Offset(14f * density, 9f * density),
-            )
         }
+    }
+    // The label is a real composable, not drawn text, because it is the grip for the area drag.
+    Box(Modifier.fillMaxSize()) {
+        groups.forEach { group ->
+            key(group.label) {
+                GroupLabel(
+                    group = group,
+                    draggable = draggable,
+                    density = density,
+                    onDrag = { onDrag(group.label, it) },
+                    onDragEnd = { onDragEnd(group.label) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GroupLabel(
+    group: GroupBox,
+    draggable: Boolean,
+    density: Float,
+    onDrag: (Offset) -> Unit,
+    onDragEnd: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Box(
+        modifier = Modifier
+            .offset {
+                IntOffset(
+                    ((group.x + 8f) * density).roundToInt(),
+                    ((group.y + 5f) * density).roundToInt(),
+                )
+            }
+            .wrapContentSize(unbounded = true, align = Alignment.TopStart)
+            .background(
+                if (hovered && draggable) Swim.CardHover else Color.Transparent,
+                RoundedCornerShape(4.dp),
+            )
+            .then(
+                if (draggable) {
+                    Modifier
+                        .hoverable(interaction)
+                        .pointerHoverIcon(PointerIcon.Hand)
+                        .pointerInput(group.label) {
+                            detectDragGestures(
+                                onDragEnd = onDragEnd,
+                                onDragCancel = onDragEnd,
+                            ) { change, amount ->
+                                change.consume()
+                                onDrag(amount / density)
+                            }
+                        }
+                } else {
+                    Modifier
+                },
+            )
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+    ) {
+        Text(
+            text = group.label,
+            color = if (hovered && draggable) Swim.Text else Swim.TextMuted,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+        )
     }
 }
 

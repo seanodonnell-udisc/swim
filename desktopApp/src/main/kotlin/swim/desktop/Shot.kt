@@ -89,6 +89,19 @@ fun main(args: Array<String>) {
         },
     )
 
+    // Milestone mode: default (no cross-area edges), then the sub-toggle on, then an area drag.
+    milestone(savedFilters)
+    shoot(outDir, "p3e-shot-milestone.png", 90, graphEnv())
+    shoot(
+        outDir, "p3e-shot-milestone-cross.png", 90, graphEnv(),
+        atFrame = 70 to { scene -> scene.click(CROSS_TOGGLE) },
+    )
+    shoot(
+        outDir, "p3e-shot-milestone-dragged.png", 90, graphEnv(),
+        atFrame = 70 to { scene -> scene.dragBy(SECOND_LABEL, 0f, 320f) },
+    )
+    savedFilters?.let { Settings().putString(FILTERS, it) }
+
     grouped(savedFilters)
     shoot(outDir, "p3b-shot-grouped.png", 60, graphEnv())
     savedFilters?.let { Settings().putString(FILTERS, it) }
@@ -167,6 +180,29 @@ private fun ImageComposeScene.click(at: Offset) {
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
+private fun ImageComposeScene.dragBy(from: Offset, dx: Float, dy: Float) {
+    move(from)
+    sendPointerEvent(
+        PointerEventType.Press, from,
+        button = PointerButton.Primary,
+        buttons = PointerButtons(isPrimaryPressed = true),
+    )
+    listOf(0.3f, 0.7f, 1f).forEach { step ->
+        sendPointerEvent(
+            PointerEventType.Move, from + Offset(dx * step, dy * step),
+            buttons = PointerButtons(isPrimaryPressed = true),
+        )
+        render()
+    }
+    sendPointerEvent(
+        PointerEventType.Release, from + Offset(dx, dy),
+        button = PointerButton.Primary,
+        buttons = PointerButtons(),
+    )
+    render()
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
 private fun ImageComposeScene.rightClick(at: Offset) {
     move(at)
     sendPointerEvent(
@@ -181,6 +217,17 @@ private fun ImageComposeScene.rightClick(at: Offset) {
     )
     render()
 }
+
+/** Persists group-by-milestone for the three milestone shots. */
+private fun milestone(saved: String?) {
+    saved?.let { Settings().putString(FILTERS, it.replace("\"NONE\"", "\"MILESTONE\"")) }
+}
+
+/** The "Cross-milestone links" checkbox, last in the view toolbar before the counts. */
+private val CROSS_TOGGLE = Offset(1180f, 73f)
+
+/** Inside the second area's label band. Read off the default milestone shot. */
+private val SECOND_LABEL = Offset(445f, 139f)
 
 /** Persists group-by-project, so the group outlines appear in one shot. */
 private fun grouped(saved: String?) {

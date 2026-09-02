@@ -6,6 +6,7 @@ import swim.core.model.IssueNode
 import swim.core.model.RelationType
 import swim.core.model.WorkflowStateType
 import swim.core.session.GraphGrouping
+import androidx.compose.ui.geometry.Offset
 import swim.layout.Position
 import swim.layout.PositionSnapshot
 import swim.ui.graph.GraphCanvasDefaults
@@ -15,7 +16,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertContains
 import kotlin.test.assertTrue
 
-private fun node(id: String, team: String = "ENG", project: String? = null, labels: List<String> = emptyList()) =
+private fun node(
+    id: String,
+    team: String = "ENG",
+    project: String? = null,
+    labels: List<String> = emptyList(),
+    milestone: String? = null,
+) =
     IssueNode(
         id = id,
         identifier = id,
@@ -26,6 +33,7 @@ private fun node(id: String, team: String = "ENG", project: String? = null, labe
         team = team,
         project = project,
         labels = labels,
+        milestone = milestone,
     )
 
 private const val KEY = "team=ENG"
@@ -154,6 +162,116 @@ class PlacementTest {
         assertTrue(
             again.positions.filterKeys { it != "A" } != first.positions.filterKeys { it != "A" },
             "a one-node snapshot no longer disturbs the others, so the drop may save just one",
+        )
+    }
+
+    private val milestoned = GraphData(
+        nodes = listOf(
+            node("A", milestone = "M1"),
+            node("B", milestone = "M1"),
+            node("C", milestone = "M2"),
+            node("D"),
+        ),
+        // A blocks B inside M1; A blocks C across areas; D has no milestone.
+        edges = listOf(blocks("A", "B"), blocks("A", "C"), blocks("C", "D")),
+    )
+
+    @Test
+    fun theNoMilestoneAreaComesLast() {
+        val placed = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, PositionSnapshot())
+        assertEquals(listOf("M1", "M2", "No milestone"), placed.groups.map { it.label })
+    }
+
+    @Test
+    fun onlyTheEdgesInsideOneAreaSurviveTheCrossFilter() {
+        val hidden = withoutCrossGroupEdges(milestoned, GraphGrouping.MILESTONE)
+        assertEquals(listOf("A" to "B"), hidden.edges.map { it.from to it.to })
+        // Nothing is hidden when the graph is not grouped.
+        assertEquals(milestoned.edges, withoutCrossGroupEdges(milestoned, GraphGrouping.NONE).edges)
+    }
+
+    @Test
+    fun anAreaDragMovesEveryMemberAndNothingElse() {
+        val placed = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, PositionSnapshot())
+        val ids = idsIn(milestoned, GraphGrouping.MILESTONE, "M1")
+        assertEquals(setOf("A", "B"), ids)
+
+        val moved = moveGroup(placed.positions, ids, Offset(120f, -40f))
+        ids.forEach { id ->
+            val was = placed.positions.getValue(id)
+            assertEquals(Position(was.x + 120f, was.y - 40f), moved.getValue(id))
+        }
+        assertEquals(placed.positions.getValue("C"), moved.getValue("C"))
+        assertEquals(placed.positions.getValue("D"), moved.getValue("D"))
+    }
+
+    @Test
+    fun theStoredAreaOffsetOnlyMovesMembersThatAreNotHandPlaced() {
+        val first = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, PositionSnapshot())
+        // The user dragged M1 right by 300. A and B were persisted at their new spots, and the
+        // area kept the offset so a member placed later lands inside the area that moved.
+        val ids = idsIn(milestoned, GraphGrouping.MILESTONE, "M1")
+        val dropped = moveGroup(first.positions, ids, Offset(300f, 0f))
+        val snapshot = PositionSnapshot(
+            mapOf(
+                KEY to dropped.filterKeys { it in ids } +
+                    (groupOffsetKey("M1") to Position(300f, 0f)),
+            ),
+        )
+        assertEquals(mapOf("M1" to Position(300f, 0f)), groupOffsetsIn(snapshot, KEY))
+
+        val again = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, snapshot)
+        // A and B are hand-placed, so they are exactly where they were dropped.
+        ids.forEach { assertEquals(dropped.getValue(it), again.positions.getValue(it)) }
+        // The area outline followed them.
+        val m1 = again.groups.first { it.label == "M1" }
+        assertTrue(m1.x > first.groups.first { it.label == "M1" }.x)
+    }
+
+    @Test
+    fun aFreshMemberLandsInsideTheAreaThatWasDragged() {
+        val before = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, PositionSnapshot())
+        val onlyOffset = PositionSnapshot(mapOf(KEY to mapOf(groupOffsetKey("M1") to Position(300f, 55f))))
+        val after = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, onlyOffset)
+        listOf("A", "B").forEach { id ->
+            val was = before.positions.getValue(id)
+            assertEquals(Position(was.x + 300f, was.y + 55f), after.positions.getValue(id))
+        }
+        assertEquals(before.positions.getValue("C"), after.positions.getValue("C"))
+    }
+
+    @Test
+    fun eachGroupingKeepsItsOwnArrangement() {
+        val noneKey = "q|none"
+        val milestoneKey = "q|milestone"
+        val arrangedInNone = mapOf("A" to Position(10f, 20f))
+
+        // Switching to milestone must lay the areas out. Reusing the ungrouped arrangement,
+        // which shares every node, would leave the areas undrawn.
+        val fresh = placeGraph(
+            milestoned, GraphGrouping.MILESTONE, milestoneKey,
+            PositionSnapshot(mapOf(noneKey to arrangedInNone)),
+        )
+        assertTrue(
+            fresh.positions.getValue("A") != Position(10f, 20f),
+            "the milestone view inherited the ungrouped arrangement",
+        )
+        assertEquals(listOf("M1", "M2", "No milestone"), fresh.groups.map { it.label })
+
+        // With an arrangement of its own, each key keeps exactly that one.
+        val both = PositionSnapshot(
+            mapOf(
+                noneKey to arrangedInNone,
+                milestoneKey to mapOf("A" to Position(999f, 111f)),
+            ),
+        )
+        assertEquals(
+            Position(999f, 111f),
+            placeGraph(milestoned, GraphGrouping.MILESTONE, milestoneKey, both).positions.getValue("A"),
+        )
+        assertEquals(
+            Position(10f, 20f),
+            placeGraph(milestoned, GraphGrouping.NONE, noneKey, both).positions.getValue("A"),
         )
     }
 
