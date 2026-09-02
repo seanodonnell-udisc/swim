@@ -10,16 +10,27 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
-/** Linear OAuth credentials. Access tokens last 24 hours; the refresh token renews them. */
+/** How the stored Linear credential authorizes a request. The two forms are not interchangeable. */
+@Serializable
+enum class LinearAuthMode {
+    /** An OAuth access token. It carries a `Bearer` prefix, it expires, and it can be refreshed. */
+    OAUTH,
+
+    /** A personal API key. It carries no prefix, it never expires, and it has no refresh token. */
+    API_KEY,
+}
+
+/** Linear credentials. OAuth access tokens last 24 hours; the refresh token renews them. */
 @Serializable
 data class LinearTokens(
     val accessToken: String,
     val refreshToken: String? = null,
-    val expiresAt: Instant,
+    val expiresAt: Instant? = null,
+    val mode: LinearAuthMode = LinearAuthMode.OAUTH,
 ) {
     /** True when the access token is spent, or close enough that a call would race the expiry. */
     fun isExpired(skew: Duration = 60.seconds, now: Instant = Clock.System.now()): Boolean =
-        now + skew >= expiresAt
+        expiresAt != null && now + skew >= expiresAt
 }
 
 /** Per-provider credential storage, backed by the platform secret store. */

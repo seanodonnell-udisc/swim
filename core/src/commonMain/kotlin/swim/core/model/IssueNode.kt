@@ -22,6 +22,6 @@ data class IssueNode(
     val description: String? = null,
     val url: String? = null,
     val pullRequests: List<PullRequestRef>? = null,
-    val createdAt: Instant? = null,
-    val updatedAt: Instant? = null,
+    @Serializable(with = MillisInstantSerializer::class) val createdAt: Instant? = null,
+    @Serializable(with = MillisInstantSerializer::class) val updatedAt: Instant? = null,
 )

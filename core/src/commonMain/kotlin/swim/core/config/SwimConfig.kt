@@ -8,7 +8,18 @@ import kotlinx.serialization.Serializable
 data class SwimConfig(
     val repos: List<String> = emptyList(),
     val showVersionLabels: Boolean = false,
+    val repoGlobs: List<String> = DEFAULT_REPO_GLOBS,
+    val identifierPattern: String = DEFAULT_IDENTIFIER_PATTERN,
 )
+
+/** The source files `swim refs` and `swim comment-cleanup` read. */
+val DEFAULT_REPO_GLOBS: List<String> = listOf(
+    "*.swift", "*.kt", "*.java", "*.ts", "*.tsx", "*.js",
+    "*.jsx", "*.md", "*.py", "*.go", "*.rs", "*.rb",
+)
+
+/** The shape of an issue identifier in source code, for example `ENG-123`. */
+const val DEFAULT_IDENTIFIER_PATTERN: String = "[A-Z]{2,10}-[0-9]+"
 
 /** The per-OS directory holding `config.json`, without a trailing slash. */
 expect fun configDir(): String
