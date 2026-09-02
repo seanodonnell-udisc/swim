@@ -23,6 +23,7 @@ import swim.core.github.GithubClient
 import swim.core.linear.LinearClient
 import swim.core.linear.apiKeyAuth
 import swim.core.model.ApiError
+import swim.core.model.EdgeProvenance
 import swim.core.model.FilterOptions
 import swim.core.model.IssueEdge
 import swim.core.model.PrStatus
@@ -275,6 +276,85 @@ class GraphSessionTest {
     }
 
     @Test
+    fun theFirstLoadedGraphAlreadyCarriesTheDerivedEdges() = runTest(UnconfinedTestDispatcher()) {
+        val github = HttpRecorder(Canned(STACKED_PR_STATUS))
+        val f = fixture(Canned(STACKED_PAGE), github = GithubClient(github.client) { "gho_token" })
+        val states = f.collectGraph()
+
+        f.store.applyFilters()
+        f.await { states.last() is GraphState.Loaded }
+        f.settle()
+
+        // One Loaded, not two: the placement pass must never see the graph without its derived
+        // edges and then get them a moment later.
+        assertEquals(1, states.count { it is GraphState.Loaded })
+        val loaded = assertIs<GraphState.Loaded>(states.last())
+        assertEquals(
+            listOf(IssueEdge("ENG-1", "ENG-2", RelationType.BLOCKS, provenance = EdgeProvenance.PR_DERIVED)),
+            loaded.data.edges,
+        )
+        assertEquals("feat-b", loaded.prStatuses["https://github.com/acme/app/pull/8"]?.headRefName)
+    }
+
+    @Test
+    fun twoIssuesOnOneBranchArriveAsAStack() = runTest(UnconfinedTestDispatcher()) {
+        val github = HttpRecorder(Canned(SHARED_BRANCH_PR_STATUS))
+        val f = fixture(Canned(STACKED_PAGE), github = GithubClient(github.client) { "gho_token" })
+        val states = f.collectGraph()
+
+        f.store.applyFilters()
+        f.await { states.last() is GraphState.Loaded }
+
+        val loaded = assertIs<GraphState.Loaded>(states.last())
+        assertEquals(listOf(setOf("ENG-1", "ENG-2")), loaded.data.stacks)
+        assertTrue(loaded.data.edges.isEmpty())
+    }
+
+    @Test
+    fun theDeriveToggleDropsTheDerivedEdgesWithoutALoad() = runTest(UnconfinedTestDispatcher()) {
+        val github = HttpRecorder(Canned(STACKED_PR_STATUS))
+        val f = fixture(Canned(STACKED_PAGE), github = GithubClient(github.client) { "gho_token" })
+        backgroundScope.launch { f.session.projected.collect {} }
+
+        f.store.applyFilters()
+        f.await { f.session.projected.value.edges.isNotEmpty() }
+
+        f.session.setDerivePrRelations(false)
+        f.await { f.session.projected.value.edges.isEmpty() }
+
+        f.session.setDerivePrRelations(true)
+        f.await { f.session.projected.value.edges.isNotEmpty() }
+        assertEquals(1, f.graphRequests)
+    }
+
+    @Test
+    fun withoutGithubTheGraphCarriesOnlyTheLinearRelations() = runTest(UnconfinedTestDispatcher()) {
+        val f = fixture(Canned(STACKED_PAGE))
+        val states = f.collectGraph()
+
+        f.store.applyFilters()
+        f.await { states.last() is GraphState.Loaded }
+
+        val loaded = assertIs<GraphState.Loaded>(states.last())
+        assertTrue(loaded.data.edges.isEmpty())
+        assertTrue(loaded.data.stacks.isEmpty())
+    }
+
+    @Test
+    fun aGithubFailureStillLoadsThePlainLinearGraph() = runTest(UnconfinedTestDispatcher()) {
+        val github = HttpRecorder(Canned("""{"message":"Bad credentials"}""", HttpStatusCode.Unauthorized))
+        val f = fixture(Canned(STACKED_PAGE), github = GithubClient(github.client) { "gho_token" })
+        val states = f.collectGraph()
+
+        f.store.applyFilters()
+        f.await { states.last() is GraphState.Loaded }
+
+        val loaded = assertIs<GraphState.Loaded>(states.last())
+        assertTrue(loaded.data.edges.isEmpty())
+        assertTrue(f.session.prStatusFailed.value)
+    }
+
+    @Test
     fun draggedPositionsMergeIntoTheCurrentQuerysSavedLayout() = runTest(UnconfinedTestDispatcher()) {
         val f = fixture(Canned(GRAPH_PAGE))
         f.store.setTeam("ENG")
@@ -462,3 +542,26 @@ private const val SETTLE_MS = 60L
 
 private const val PR_STATUS = """{"data":{"pr0":{"pullRequest":{"reviewDecision":"APPROVED",
   "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}}}}"""
+
+// Two issues with one pull request each and no Linear relation between them.
+private const val STACKED_PAGE = """{"data":{"issues":{"nodes":[
+  {"id":"u1","identifier":"ENG-1","title":"One","priority":1,
+   "state":{"name":"Todo","type":"unstarted"},"team":{"key":"ENG"},
+   "labels":{"nodes":[]},
+   "attachments":{"nodes":[{"url":"https://github.com/acme/app/pull/7","title":"Base"}]},
+   "relations":{"nodes":[]},"inverseRelations":{"nodes":[]}},
+  {"id":"u2","identifier":"ENG-2","title":"Two","priority":2,
+   "state":{"name":"Todo","type":"unstarted"},"team":{"key":"ENG"},
+   "labels":{"nodes":[]},
+   "attachments":{"nodes":[{"url":"https://github.com/acme/app/pull/8","title":"On top"}]},
+   "relations":{"nodes":[]},"inverseRelations":{"nodes":[]}}
+],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}"""
+
+// Pull request 8 starts from pull request 7's branch, so ENG-1 blocks ENG-2.
+private const val STACKED_PR_STATUS = """{"data":{
+  "pr0":{"pullRequest":{"headRefName":"feat-a","baseRefName":"main","commits":{"nodes":[]}}},
+  "pr1":{"pullRequest":{"headRefName":"feat-b","baseRefName":"feat-a","commits":{"nodes":[]}}}}}"""
+
+private const val SHARED_BRANCH_PR_STATUS = """{"data":{
+  "pr0":{"pullRequest":{"headRefName":"feat-a","baseRefName":"main","commits":{"nodes":[]}}},
+  "pr1":{"pullRequest":{"headRefName":"feat-a","baseRefName":"main","commits":{"nodes":[]}}}}}"""

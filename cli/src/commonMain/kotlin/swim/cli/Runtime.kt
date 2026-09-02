@@ -19,7 +19,11 @@ object Runtime {
     val config: SwimConfig by lazy { loadConfig() }
 
     /** The shared HTTP client. */
-    val http: HttpClient by lazy { HttpClient(Darwin) }
+    val http: HttpClient by lazy {
+        HttpClient(Darwin) {
+            install(io.ktor.client.plugins.HttpTimeout) { requestTimeoutMillis = 15_000 }
+        }
+    }
 
     /** The platform credential store. */
     val tokenStore: TokenStore by lazy { createTokenStore() }

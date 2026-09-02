@@ -10,10 +10,18 @@ enum class RelationType {
     @SerialName("duplicate") DUPLICATE,
 }
 
+/** Where an edge comes from. Only a [LINEAR] edge has a relation Linear can delete or change. */
+@Serializable
+enum class EdgeProvenance {
+    @SerialName("linear") LINEAR,
+    @SerialName("pr") PR_DERIVED,
+}
+
 @Serializable
 data class IssueEdge(
     val from: String,
     val to: String,
     val type: RelationType,
     val relationId: String? = null,
+    val provenance: EdgeProvenance = EdgeProvenance.LINEAR,
 )

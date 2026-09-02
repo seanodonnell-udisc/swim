@@ -113,6 +113,8 @@ private fun batchedQuery(refs: List<PrRef>): GraphQlRequest {
         """  pr$i: repository(owner: ${'$'}owner$i, name: ${'$'}name$i) {
     pullRequest(number: ${'$'}number$i) {
       reviewDecision
+      headRefName
+      baseRefName
       commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
     }
   }"""
@@ -140,6 +142,8 @@ private fun readStatuses(refs: List<PrRef>, body: String): Map<String, PrStatus>
         out[ref.url] = PrStatus(
             reviewDecision = pr["reviewDecision"].asString(),
             checkState = rollup?.get("state").asString(),
+            headRefName = pr["headRefName"].asString(),
+            baseRefName = pr["baseRefName"].asString(),
         )
     }
     return out

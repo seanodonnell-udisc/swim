@@ -47,9 +47,15 @@ sealed interface GraphState {
 
     /**
      * The last request answered. [filters] are the ones that produced [data], which is not the
-     * live filter state: editing a filter arms a load without performing one.
+     * live filter state: editing a filter arms a load without performing one. [data] already
+     * carries the relations the pull requests imply, so the placement pass sees the full graph
+     * the first time it runs.
      */
-    data class Loaded(val data: GraphData, val filters: FilterOptions) : GraphState
+    data class Loaded(
+        val data: GraphData,
+        val filters: FilterOptions,
+        val prStatuses: Map<String, PrStatus> = emptyMap(),
+    ) : GraphState
 
     /** The last request failed. */
     data class Error(val error: SwimError) : GraphState
@@ -93,8 +99,10 @@ class GraphSession(
 
     private val _showRelatedEdges = MutableStateFlow(true)
     private val _showDuplicates = MutableStateFlow(false)
+    private val _derivePrRelations = MutableStateFlow(true)
 
     private var lastPrFetch: Pair<List<String>, Instant>? = null
+    private var lastPrStatuses: Map<String, PrStatus> = emptyMap()
 
     private val _prStatusFailed = MutableStateFlow(false)
 
@@ -116,7 +124,12 @@ class GraphSession(
                 emit(GraphState.Loading)
                 emit(
                     try {
-                        GraphState.Loaded(client.getIssuesWithRelations(filters), filters)
+                        val data = client.getIssuesWithRelations(filters)
+                        // The pull-request answer must arrive before Loaded. The placement pass
+                        // runs on the first graph it gets, and an edge that lands after it moves
+                        // cards the user is already reading.
+                        val statuses = fetchPrStatuses(data)
+                        GraphState.Loaded(withPrRelations(data, statuses), filters, statuses)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: SwimError) {
@@ -131,11 +144,14 @@ class GraphSession(
             .stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), GraphState.NotLoaded)
     }
 
-    /** The issues nothing active blocks. */
+    /** The issues nothing active blocks. A derived block counts only while the toggle is on. */
     val readySet: StateFlow<Set<String>> by lazy {
-        graph
-            .map { state -> (state as? GraphState.Loaded)?.let { findReadySet(it.data) }.orEmpty() }
-            .stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), emptySet())
+        combine(graph, _derivePrRelations) { state, derive ->
+            (state as? GraphState.Loaded)?.data
+                ?.let { if (derive) it else withoutPrRelations(it) }
+                ?.let(::findReadySet)
+                .orEmpty()
+        }.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), emptySet())
     }
 
     /** Whether `related` edges are drawn. */
@@ -144,10 +160,16 @@ class GraphSession(
     /** Whether issues on the duplicate side of a duplicate relation are drawn. */
     val showDuplicates: StateFlow<Boolean> = _showDuplicates.asStateFlow()
 
-    /** The loaded graph with the view toggles applied. Empty until the first load answers. */
+    /** Whether the relations the pull-request stacks imply are drawn. On unless the user says no. */
+    val derivePrRelations: StateFlow<Boolean> = _derivePrRelations.asStateFlow()
+
+    /**
+     * The loaded graph with the view toggles applied, plus the stacks the surface draws as one
+     * pile of cards. Empty until the first load answers.
+     */
     val projected: StateFlow<GraphData> by lazy {
-        combine(graph, _showRelatedEdges, _showDuplicates) { state, related, duplicates ->
-            project((state as? GraphState.Loaded)?.data ?: EMPTY_GRAPH, related, duplicates)
+        combine(graph, _showRelatedEdges, _showDuplicates, _derivePrRelations) { state, related, duplicates, derive ->
+            project((state as? GraphState.Loaded)?.data ?: EMPTY_GRAPH, related, duplicates, derive)
         }.stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), EMPTY_GRAPH)
     }
 
@@ -159,13 +181,12 @@ class GraphSession(
 
     /**
      * Review and check status for every pull request the graph links to, in one batch per load.
-     * Empty without a GitHub token. The same set of URLs is not asked for again inside a minute.
+     * Empty without a GitHub token. The load carries them, so the badges and the derived edges
+     * always show the same answer. A load that is in flight keeps the last answer on screen.
      */
     val prStatuses: StateFlow<Map<String, PrStatus>> by lazy {
         graph
-            .mapNotNull { (it as? GraphState.Loaded)?.data }
-            .map { data -> data.nodes.flatMap { it.pullRequests.orEmpty() }.map { it.url }.distinct().sorted() }
-            .transformLatest { urls -> fetchPrStatuses(urls)?.let { emit(it) } }
+            .mapNotNull { (it as? GraphState.Loaded)?.prStatuses }
             .stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), emptyMap())
     }
 
@@ -182,6 +203,11 @@ class GraphSession(
     /** Draws or hides the issues that duplicate another issue. */
     fun setShowDuplicates(show: Boolean) {
         _showDuplicates.value = show
+    }
+
+    /** Draws or hides the relations the pull-request stacks imply. No load is necessary. */
+    fun setDerivePrRelations(derive: Boolean) {
+        _derivePrRelations.value = derive
     }
 
     /** Creates `from <type> to` and reloads. Returns the new relation id. */
@@ -233,18 +259,30 @@ class GraphSession(
         positions.set(PositionSnapshot(snapshot.byKey + (key to merged)))
     }
 
-    private suspend fun fetchPrStatuses(urls: List<String>): Map<String, PrStatus>? {
-        if (github == null || urls.isEmpty()) return emptyMap()
+    /**
+     * The statuses for one loaded graph. Never throws and never waits without an end: GitHub is an
+     * overlay, so every failure degrades to the last good answer, and the graph loads regardless.
+     */
+    private suspend fun fetchPrStatuses(data: GraphData): Map<String, PrStatus> {
+        if (github == null) return emptyMap()
+        val urls = data.nodes.flatMap { it.pullRequests.orEmpty() }.map { it.url }.distinct().sorted()
+        if (urls.isEmpty()) return emptyMap()
+
         val previous = lastPrFetch
         val now = Clock.System.now()
-        if (previous != null && previous.first == urls && now - previous.second < PR_STATUS_TTL) return null
+        if (previous != null && previous.first == urls && now - previous.second < PR_STATUS_TTL) {
+            return lastPrStatuses
+        }
 
-        // Stamped after the answer, not before: transformLatest cancels this block on the next
-        // load, and a cancelled fetch that counted as done would blank every badge for a minute.
+        // getPrStatuses answers null for every failure, and the HTTP engine ends a request that
+        // gets no answer. The load therefore waits for GitHub, but never without an end.
         val result = github.getPrStatuses(urls)
         _prStatusFailed.value = result == null
-        if (result == null) return null
+        if (result == null) return lastPrStatuses
+        // Stamped after the answer, not before: transformLatest cancels this block on the next
+        // load, and a cancelled fetch that counted as done would blank every badge for a minute.
         lastPrFetch = urls to Clock.System.now()
+        lastPrStatuses = result
         return result
     }
 
@@ -252,9 +290,19 @@ class GraphSession(
         ?: throw IllegalArgumentException("The ${edge.type} edge ${edge.from} -> ${edge.to} has no relation id.")
 }
 
-/** Applies the two view toggles: duplicates are removed with their edges, `related` edges only hidden. */
-internal fun project(data: GraphData, showRelatedEdges: Boolean, showDuplicates: Boolean): GraphData {
-    val visible = if (showDuplicates) data else hideDuplicates(data)
+/**
+ * Applies the view toggles: duplicates are removed with their edges, `related` edges only hidden,
+ * and the pull-request relations either kept or dropped. The derived edges stay at the end of the
+ * list, after the Linear ones, so a cycle-breaking pass drops the derived edge first.
+ */
+internal fun project(
+    data: GraphData,
+    showRelatedEdges: Boolean,
+    showDuplicates: Boolean,
+    derivePrRelations: Boolean,
+): GraphData {
+    val derived = if (derivePrRelations) data else withoutPrRelations(data)
+    val visible = if (showDuplicates) derived else hideDuplicates(derived)
     return if (showRelatedEdges) {
         visible
     } else {

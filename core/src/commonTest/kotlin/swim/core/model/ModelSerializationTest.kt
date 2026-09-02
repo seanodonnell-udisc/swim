@@ -54,6 +54,26 @@ class ModelSerializationTest {
     }
 
     @Test
+    fun anEdgeWrittenBeforeProvenanceExistedReadsBackAsALinearOne() {
+        val stored = """{"from":"MOB-1","to":"MOB-2","type":"blocks","relationId":"rel-1"}"""
+        assertEquals(EdgeProvenance.LINEAR, Json.decodeFromString<IssueEdge>(stored).provenance)
+
+        val derived = IssueEdge("MOB-1", "MOB-2", RelationType.BLOCKS, provenance = EdgeProvenance.PR_DERIVED)
+        assertEquals(derived, Json.decodeFromString<IssueEdge>(Json.encodeToString(derived)))
+    }
+
+    @Test
+    fun prStatusRoundTripsWithTheBranchNames() {
+        val status = PrStatus("APPROVED", "SUCCESS", headRefName = "feat-b", baseRefName = "feat-a")
+        assertEquals(status, Json.decodeFromString<PrStatus>(Json.encodeToString(status)))
+        // A status written before the branch fields existed still reads.
+        assertEquals(
+            PrStatus("APPROVED", "SUCCESS"),
+            Json.decodeFromString<PrStatus>("""{"reviewDecision":"APPROVED","checkState":"SUCCESS"}"""),
+        )
+    }
+
+    @Test
     fun graphDataRoundTrips() {
         val graph = GraphData(
             nodes = listOf(

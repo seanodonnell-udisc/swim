@@ -18,6 +18,7 @@ private val URLS = listOf(
 
 private const val STATUSES = """{"data":{
   "pr0":{"pullRequest":{"reviewDecision":"APPROVED",
+    "headRefName":"feat-a","baseRefName":"main",
     "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]}}},
   "pr1":{"pullRequest":{"reviewDecision":null,
     "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}
@@ -46,11 +47,19 @@ class GithubClientTest {
         // The URL that is not a pull request never reaches GitHub.
         assertTrue(!body.contains("not-a-pr"))
 
+        assertContains(body, "headRefName")
+        assertContains(body, "baseRefName")
+
         assertEquals(2, statuses.size)
         assertEquals("APPROVED", statuses[URLS[0]]?.reviewDecision)
         assertEquals("SUCCESS", statuses[URLS[0]]?.checkState)
+        assertEquals("feat-a", statuses[URLS[0]]?.headRefName)
+        assertEquals("main", statuses[URLS[0]]?.baseRefName)
         assertEquals(null, statuses[URLS[1]]?.reviewDecision)
         assertEquals(null, statuses[URLS[1]]?.checkState)
+        // A pull request GitHub answered without branch names carries none.
+        assertEquals(null, statuses[URLS[1]]?.headRefName)
+        assertEquals(null, statuses[URLS[1]]?.baseRefName)
     }
 
     @Test

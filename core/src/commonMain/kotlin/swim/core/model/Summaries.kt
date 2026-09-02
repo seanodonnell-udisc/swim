@@ -46,6 +46,14 @@ data class IssueRelationDetail(
 @Serializable
 data class IssueDetail(val node: IssueNode, val relations: List<IssueRelationDetail>)
 
-/** Review and check state for one pull request. */
+/**
+ * Review and check state for one pull request, plus the two branches that say where it sits in a
+ * stack. The branch names are null when GitHub did not report them.
+ */
 @Serializable
-data class PrStatus(val reviewDecision: String? = null, val checkState: String? = null)
+data class PrStatus(
+    val reviewDecision: String? = null,
+    val checkState: String? = null,
+    val headRefName: String? = null,
+    val baseRefName: String? = null,
+)

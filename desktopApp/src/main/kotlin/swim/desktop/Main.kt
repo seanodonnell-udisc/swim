@@ -14,6 +14,7 @@ import androidx.compose.ui.window.rememberWindowState
 import com.russhwolf.settings.Settings
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withTimeout
@@ -47,7 +48,9 @@ private const val WINDOW_KEY = "swim.window"
 
 fun main() {
     Log.start()
-    val http = HttpClient(OkHttp)
+    val http = HttpClient(OkHttp) {
+        install(HttpTimeout) { requestTimeoutMillis = 15_000 }
+    }
     val settings = Settings()
     val tokenStore = tokenStore()
     val commands = AppCommands()

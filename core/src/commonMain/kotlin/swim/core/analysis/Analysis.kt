@@ -306,5 +306,6 @@ fun hideDuplicates(graph: GraphData): GraphData {
         nodes = graph.nodes.filter { it.identifier !in duplicateIds },
         edges = graph.edges.filter { it.from !in duplicateIds && it.to !in duplicateIds },
         externalBlockerStates = graph.externalBlockerStates,
+        stacks = graph.stacks.map { it - duplicateIds }.filter { it.size > 1 },
     )
 }
