@@ -3,6 +3,7 @@ package swim.cli
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.darwin.Darwin
 import swim.core.auth.LinearAuth
+import swim.core.auth.OAuthApps
 import swim.core.auth.LinearOAuth
 import swim.core.auth.TokenStore
 import swim.core.auth.createTokenStore

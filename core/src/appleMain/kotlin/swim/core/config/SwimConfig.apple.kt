@@ -6,6 +6,7 @@ import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
+import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import platform.Foundation.NSData
 import platform.Foundation.NSFileManager
@@ -13,10 +14,13 @@ import platform.Foundation.NSFilePosixPermissions
 import platform.Foundation.NSHomeDirectory
 import platform.Foundation.create
 import platform.Foundation.dataWithContentsOfFile
+import platform.posix.getenv
 import platform.posix.memcpy
 
 /** Both iOS and macOS keep app data under Library. On iOS this is inside the app container. */
 actual fun configDir(): String = NSHomeDirectory() + "/Library/Application Support/swim"
+
+actual fun envVar(name: String): String? = getenv(name)?.toKString()
 
 internal actual fun readFileOrNull(path: String): String? =
     NSData.dataWithContentsOfFile(path)?.toByteArray()?.decodeToString()

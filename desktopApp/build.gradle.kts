@@ -12,6 +12,23 @@ kotlin {
     dependencies {
         implementation(projects.shared)
         implementation(compose.desktop.currentOs)
+        implementation(libs.ktor.client.core)
+        implementation(libs.ktor.client.okhttp)
+        implementation(libs.kotlinx.coroutines.core)
+    }
+}
+
+// Renders the shell offscreen to PNGs. See swim.desktop.Shot.
+tasks.register<JavaExec>("shot") {
+    mainClass.set("swim.desktop.ShotKt")
+    classpath = sourceSets["main"].runtimeClasspath
+    args = listOf(project.findProperty("swim.shot.out") as String? ?: "build/shots")
+}
+
+// `run` and `shot` both take -Pswim.dev.autoload and -Pswim.insecureStorage.
+tasks.withType<JavaExec>().configureEach {
+    listOf("swim.dev.autoload", "swim.insecureStorage").forEach { key ->
+        (project.findProperty(key) as String?)?.let { systemProperty(key, it) }
     }
 }
 

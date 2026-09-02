@@ -31,6 +31,9 @@ kotlin {
         commonMain.dependencies {
             api(projects.core)
             api(projects.layout)
+            // SwimEnv carries an HttpClient and a CoroutineScope, so both are public API.
+            api(libs.ktor.client.core)
+            api(libs.kotlinx.coroutines.core)
             implementation(libs.compose.runtime)
             implementation(libs.compose.foundation)
             implementation(libs.compose.ui)

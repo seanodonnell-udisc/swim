@@ -7,7 +7,6 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
-import swim.cli.OAuthApps
 import swim.cli.Out
 import swim.cli.Runtime
 import swim.cli.SwimCommand
@@ -18,6 +17,7 @@ import swim.core.auth.LinearAuthMode
 import swim.core.auth.LinearOAuth
 import swim.core.auth.LinearTokens
 import swim.core.auth.LoopbackServer
+import swim.core.auth.OAuthApps
 import swim.core.auth.Pkce
 import swim.core.github.GithubClient
 import swim.core.linear.LinearClient
@@ -73,7 +73,7 @@ class AuthCommand : SwimCommand("auth") {
             )
         }
 
-        val server = LoopbackServer()
+        val server = LoopbackServer(OAuthApps.LOOPBACK_PORT, OAuthApps.LOOPBACK_PATH)
         val oauth = LinearOAuth(Runtime.http, clientId, server.redirectUri)
         val verifier = Pkce.createVerifier()
         val state = Pkce.createState()

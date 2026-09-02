@@ -13,6 +13,8 @@ actual fun configDir(): String {
     return "$xdg/swim"
 }
 
+actual fun envVar(name: String): String? = System.getenv(name)
+
 internal actual fun readFileOrNull(path: String): String? = try {
     File(path).takeIf { it.isFile }?.readText()
 } catch (e: Exception) {

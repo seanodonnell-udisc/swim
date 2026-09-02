@@ -125,6 +125,7 @@ fun GraphCanvas(
     selection: Set<String> = emptySet(),
     state: GraphCanvasState = rememberGraphCanvasState(),
     callbacks: GraphCanvasCallbacks = GraphCanvasCallbacks(),
+    underlay: @Composable () -> Unit = {},
 ) {
     val density = LocalDensity.current.density
     val nodes = remember(graph) { graph.nodes.associateBy { it.identifier } }
@@ -132,11 +133,18 @@ fun GraphCanvas(
     val focus = remember { FocusRequester() }
 
     val rects = buildRects(positions, ids, state.dragIds, state.dragDelta)
+    val bounds = contentBoundsOf(rects.values)
     SideEffect {
         state.density = density
-        state.contentBounds = contentBoundsOf(rects.values)
+        state.contentBounds = bounds
     }
-    LaunchedEffect(rects.isNotEmpty(), state.viewport) { state.fitOnce() }
+    LaunchedEffect(bounds != null, state.viewport) {
+        // This effect can run before this frame's SideEffect, so it takes the bounds directly.
+        // Positions that arrive after the first frame would otherwise never arm the fit.
+        state.density = density
+        state.contentBounds = bounds
+        state.fitOnce()
+    }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 
     Box(
@@ -168,6 +176,8 @@ fun GraphCanvas(
                     transformOrigin = TransformOrigin(0f, 0f)
                 },
         ) {
+            // Drawn in canvas space, under the edges and the cards. Group outlines live here.
+            underlay()
             Canvas(Modifier.fillMaxSize()) {
                 scale(density, pivot = Offset.Zero) {
                     drawEdges(graph, rects, cycleEdges, crossLinks)

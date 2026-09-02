@@ -6,6 +6,8 @@ import java.io.File
 /** The app's private files directory, which Android already keeps inaccessible to other apps. */
 actual fun configDir(): String = File(androidContext().filesDir, "swim").absolutePath
 
+actual fun envVar(name: String): String? = System.getenv(name)
+
 internal actual fun readFileOrNull(path: String): String? = try {
     File(path).takeIf { it.isFile }?.readText()
 } catch (e: Exception) {

@@ -24,6 +24,9 @@ const val DEFAULT_IDENTIFIER_PATTERN: String = "[A-Z]{2,10}-[0-9]+"
 /** The per-OS directory holding `config.json`, without a trailing slash. */
 expect fun configDir(): String
 
+/** One environment variable, or null when it is not set. */
+expect fun envVar(name: String): String?
+
 /** The config file path. */
 fun configPath(): String = "${configDir()}/config.json"
 

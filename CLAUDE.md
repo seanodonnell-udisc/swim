@@ -12,6 +12,7 @@ Run the desktop app: `./gradlew :desktopApp:run`.
 Run the unit tests: `./gradlew :core:jvmTest :layout:jvmTest :shared:jvmTest`.
 Install the Android app on a connected device: `./gradlew :androidApp:installDebug`.
 Build iOS with Xcode. Do not run the framework task by hand.
+Use Android Studio for Android run and debug. IntelliJ IDEA cannot sync AGP 9.1 (IDEA-385007). Do not downgrade AGP — androidx requires 9.1.
 
 ## More information
 

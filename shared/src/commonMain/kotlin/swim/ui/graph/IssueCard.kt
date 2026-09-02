@@ -265,13 +265,11 @@ private fun AssigneePicker(
     callbacks: GraphCanvasCallbacks,
 ) {
     var open by remember { mutableStateOf(false) }
-    // ponytail: the node carries a display name, so the current user is matched by name. Match on
-    // IssueNode.assigneeId once the session wave adds it to the query.
-    val current = users.firstOrNull { it.name == node.assignee }
+    val current = users.firstOrNull { it.id == node.assigneeId }
     Box {
         Text(
-            text = current?.name?.substringBefore(' ') ?: "—",
-            color = if (current == null) Swim.Muted else Swim.TextMuted,
+            text = (current?.name ?: node.assignee)?.substringBefore(' ') ?: "—",
+            color = if (node.assigneeId == null) Swim.Muted else Swim.TextMuted,
             fontSize = 9.sp,
             maxLines = 1,
             modifier = Modifier

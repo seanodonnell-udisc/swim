@@ -3,27 +3,23 @@ package swim.ui.graph
 import androidx.compose.ui.graphics.Color
 import swim.core.model.PrStatus
 import swim.core.model.WorkflowStateType
+import swim.core.session.StateCategory
+import swim.core.session.stateCategory
 
 /** How a card looks. The legacy renderer derived this from the state NAME, not the state type. */
 internal enum class CardCategory { DONE, IN_PROGRESS, IN_REVIEW, BLOCKED, PAUSED, TODO, DEFAULT }
 
-// ponytail: a copy of the legacy substring rules. Swap the body for
-// swim.core.session.stateCategory when that classifier lands.
-internal fun cardCategory(state: String, stateType: WorkflowStateType): CardCategory {
-    val name = state.lowercase()
-    return when {
-        stateType == WorkflowStateType.COMPLETED || stateType == WorkflowStateType.CANCELED ->
-            CardCategory.DONE
-        name.contains("done") || name.contains("complete") || name.contains("cancel") ||
-            name.contains("invalid") -> CardCategory.DONE
-        name.contains("progress") -> CardCategory.IN_PROGRESS
-        name.contains("review") -> CardCategory.IN_REVIEW
-        name.contains("blocked") -> CardCategory.BLOCKED
-        name.contains("paused") -> CardCategory.PAUSED
-        name.contains("todo") -> CardCategory.TODO
-        else -> CardCategory.DEFAULT
+/** The one classifier in `swim.core.session`, mapped onto the categories the card draws. */
+internal fun cardCategory(state: String, stateType: WorkflowStateType): CardCategory =
+    when (stateCategory(state, stateType)) {
+        StateCategory.DONE -> CardCategory.DONE
+        StateCategory.IN_PROGRESS -> CardCategory.IN_PROGRESS
+        StateCategory.IN_REVIEW -> CardCategory.IN_REVIEW
+        StateCategory.BLOCKED -> CardCategory.BLOCKED
+        StateCategory.PAUSED -> CardCategory.PAUSED
+        StateCategory.TODO -> CardCategory.TODO
+        StateCategory.BACKLOG -> CardCategory.DEFAULT
     }
-}
 
 /** The badge a category earns, or null when the card shows none. */
 internal fun categoryBadge(category: CardCategory, ready: Boolean): String? = when (category) {
