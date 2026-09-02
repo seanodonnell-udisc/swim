@@ -27,7 +27,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,6 +82,10 @@ internal fun IssueCard(
     callbacks: GraphCanvasCallbacks,
     modifier: Modifier = Modifier,
 ) {
+    // A pointerInput block is launched once and keeps running; Compose swaps the block only when
+    // a key changes, so a closure over `handlers` freezes the selection and the positions it
+    // captured on the first hover. Read the current one at gesture time instead.
+    val live = rememberUpdatedState(handlers)
     val category = cardCategory(node.state, node.stateType)
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
@@ -110,8 +116,8 @@ internal fun IssueCard(
                 )
                 .pointerInput(node.identifier) {
                     detectTapGestures(
-                        onTap = { handlers.onSelect() },
-                        onDoubleTap = { handlers.onOpen() },
+                        onTap = { live.value.onSelect() },
+                        onDoubleTap = { live.value.onOpen() },
                     )
                 }
                 .then(
@@ -119,12 +125,12 @@ internal fun IssueCard(
                     if (mode == CanvasMode.ARRANGE) {
                         Modifier.pointerInput(node.identifier) {
                             detectDragGestures(
-                                onDragStart = { handlers.onDragStart() },
-                                onDragEnd = { handlers.onDragEnd() },
-                                onDragCancel = { handlers.onDragEnd() },
+                                onDragStart = { live.value.onDragStart() },
+                                onDragEnd = { live.value.onDragEnd() },
+                                onDragCancel = { live.value.onDragEnd() },
                             ) { change, amount ->
                                 change.consume()
-                                handlers.onDrag(amount / density)
+                                live.value.onDrag(amount / density)
                             }
                         }
                     } else {
@@ -159,7 +165,7 @@ internal fun IssueCard(
                 side = LinkSide.BOTTOM,
                 color = Swim.Red,
                 density = density,
-                handlers = handlers,
+                handlers = live,
                 onOverHandle = onOverHandle,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp),
             )
@@ -167,7 +173,7 @@ internal fun IssueCard(
                 side = LinkSide.LEFT,
                 color = Swim.Muted,
                 density = density,
-                handlers = handlers,
+                handlers = live,
                 onOverHandle = onOverHandle,
                 modifier = Modifier.align(Alignment.CenterStart).padding(start = 2.dp),
             )
@@ -175,7 +181,7 @@ internal fun IssueCard(
                 side = LinkSide.RIGHT,
                 color = Swim.Muted,
                 density = density,
-                handlers = handlers,
+                handlers = live,
                 onOverHandle = onOverHandle,
                 modifier = Modifier.align(Alignment.CenterEnd).padding(end = 2.dp),
             )
@@ -364,7 +370,7 @@ private fun LinkHandle(
     side: LinkSide,
     color: Color,
     density: Float,
-    handlers: CardHandlers,
+    handlers: State<CardHandlers>,
     onOverHandle: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -380,12 +386,12 @@ private fun LinkHandle(
             .pointerHoverIcon(PointerIcon.Crosshair)
             .pointerInput(side) {
                 detectDragGestures(
-                    onDragStart = { handlers.onLinkStart(side) },
-                    onDragEnd = { handlers.onLinkEnd() },
-                    onDragCancel = { handlers.onLinkEnd() },
+                    onDragStart = { handlers.value.onLinkStart(side) },
+                    onDragEnd = { handlers.value.onLinkEnd() },
+                    onDragCancel = { handlers.value.onLinkEnd() },
                 ) { change, amount ->
                     change.consume()
-                    handlers.onLink(amount / density)
+                    handlers.value.onLink(amount / density)
                 }
             },
     )

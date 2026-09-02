@@ -18,6 +18,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerButtons
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerKeyboardModifiers
 import androidx.compose.ui.unit.Density
 import swim.core.model.RelationType
 import swim.layout.Position
@@ -354,6 +355,37 @@ class CanvasInteractionTest {
     }
 
     @Test
+    fun aMarqueeThenAGrabDragsEveryCardInTheSelection() {
+        // Touch both cards first. A real window has hovered them long before the drag, and a
+        // hover is what starts their gesture coroutines.
+        move(cardCentre("ENG-101"))
+        move(cardCentre("ENG-103"))
+
+        // A box over the left column only.
+        dragBy(state.toScreen(Offset(40f, 20f)), state.toScreen(Offset(350f, 360f)) - state.toScreen(Offset(40f, 20f)))
+        assertEquals(setOf("ENG-101", "ENG-103"), selection, "the marquee did not select both")
+
+        val before = positions
+        dragBy(cardCentre("ENG-101"), Offset(80f, 60f)) { write("canvas-multi-drag.png") }
+
+        assertSameShift(before, listOf("ENG-101", "ENG-103"))
+        assertEquals(before.getValue("ENG-102"), positions.getValue("ENG-102"), "an unselected card moved")
+        assertEquals(setOf("ENG-101", "ENG-103"), selection, "the drag changed the selection")
+    }
+
+    @Test
+    fun shiftClickAccumulatesAndThenDragsBothCards() {
+        move(cardCentre("ENG-101"))
+        shiftClick(cardCentre("ENG-101"))
+        shiftClick(cardCentre("ENG-102"))
+        assertEquals(setOf("ENG-101", "ENG-102"), selection, "shift click did not accumulate")
+
+        val before = positions
+        dragBy(cardCentre("ENG-102"), Offset(-50f, 70f))
+        assertSameShift(before, listOf("ENG-101", "ENG-102"))
+    }
+
+    @Test
     fun theMarqueeIsAnArrangeToolOnly() {
         // Empty canvas, below the graph.
         val empty = Offset(1100f, 620f)
@@ -496,6 +528,25 @@ class CanvasInteractionTest {
 
     // -- driving ------------------------------------------------------------------------------
 
+    /**
+     * Every named card moved, and all by the one delta. The size of that delta is not asserted:
+     * the drag is sent in screen pixels and the positions are canvas units, so the two differ by
+     * the fit scale.
+     */
+    private fun assertSameShift(before: Map<String, Position>, ids: List<String>) {
+        val shifts = ids.map { id ->
+            val was = before.getValue(id)
+            val now = positions.getValue(id)
+            Offset(now.x - was.x, now.y - was.y)
+        }
+        val first = shifts.first()
+        assertTrue(first != Offset.Zero, "${ids.first()} did not move with the selection")
+        assertTrue(
+            shifts.all { abs(it.x - first.x) < 0.01f && abs(it.y - first.y) < 0.01f },
+            "the selection did not move as one unit: ${ids.zip(shifts)}",
+        )
+    }
+
     private fun cardCentre(id: String): Offset {
         val position = GraphCanvasPreview.positions.getValue(id)
         return state.toScreen(
@@ -527,7 +578,7 @@ class CanvasInteractionTest {
     }
 
     /** A left drag: press, three moves so the slop is passed, release. */
-    private fun dragBy(from: Offset, delta: Offset) {
+    private fun dragBy(from: Offset, delta: Offset, midDrag: () -> Unit = {}) {
         move(from)
         scene.sendPointerEvent(
             PointerEventType.Press, from,
@@ -540,6 +591,7 @@ class CanvasInteractionTest {
                 buttons = PointerButtons(isPrimaryPressed = true),
             )
             scene.render()
+            if (fraction == 0.7f) midDrag()
         }
         scene.sendPointerEvent(
             PointerEventType.Release, from + delta,
@@ -556,6 +608,30 @@ class CanvasInteractionTest {
      */
     private fun tapCanvas(at: Offset) {
         click(at)
+        Thread.sleep(350)
+        scene.render()
+    }
+
+    /**
+     * A click with shift held. `detectTapGestures` waits out the double tap window before it
+     * reports a single tap, and that timeout runs on the real clock, so the wait is real.
+     */
+    private fun shiftClick(at: Offset) {
+        val shift = PointerKeyboardModifiers(isShiftPressed = true)
+        scene.sendPointerEvent(PointerEventType.Move, at, keyboardModifiers = shift)
+        scene.render()
+        scene.sendPointerEvent(
+            PointerEventType.Press, at,
+            button = PointerButton.Primary,
+            buttons = PointerButtons(isPrimaryPressed = true),
+            keyboardModifiers = shift,
+        )
+        scene.sendPointerEvent(
+            PointerEventType.Release, at,
+            button = PointerButton.Primary,
+            buttons = PointerButtons(),
+            keyboardModifiers = shift,
+        )
         Thread.sleep(350)
         scene.render()
     }

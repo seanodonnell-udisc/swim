@@ -24,7 +24,9 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -157,6 +159,19 @@ fun GraphCanvas(
     val linkingFrom by remember(state) { derivedStateOf { state.link?.from } }
 
     val rects = buildRects(positions, ids, stackOf, state.stackFront, state.dragIds, state.dragDelta)
+    // Both gestures outlive the composition that started them, so they read the current lambda
+    // rather than closing over this frame's rects and selection. See the note in IssueCard.
+    val onMenu = rememberUpdatedState<(Offset) -> Unit> { at ->
+        state.menu = menuAt(at, state, rects, drawn)
+    }
+    val onBoxSelect = rememberUpdatedState<(Rect) -> Unit> { box ->
+        // A marquee that touches one card of a pile takes the whole pile: the pile is one unit
+        // on the canvas, and half a pile cannot be dragged anywhere useful.
+        callbacks.onSelectionChange(
+            withStackMates(rects.filterValues { it.overlaps(box) }.keys, stackOf) +
+                if (state.additive) selection else emptySet(),
+        )
+    }
     val bounds = contentBoundsOf(rects.values)
     SideEffect {
         state.density = density
@@ -190,7 +205,7 @@ fun GraphCanvas(
                 }
             )
             .modifierTracking(state)
-            .secondaryGesture(state) { at -> state.menu = menuAt(at, state, rects, drawn) }
+            .secondaryGesture(state, onMenu)
             .pickTarget(state, rects, callbacks)
             .interactPan(state)
             .scrollAndZoom(state)
@@ -198,14 +213,7 @@ fun GraphCanvas(
             // pointer modifier is declared the earlier it sees the Main pass, so the other way
             // round the selection box never got an unconsumed down to start from.
             .canvasTaps(state, rects, drawn, callbacks)
-            .panAndBoxSelect(state) { box ->
-                // A marquee that touches one card of a pile takes the whole pile: the pile is
-                // one unit on the canvas, and half a pile cannot be dragged anywhere useful.
-                callbacks.onSelectionChange(
-                    withStackMates(rects.filterValues { it.overlaps(box) }.keys, stackOf) +
-                        if (state.additive) selection else emptySet(),
-                )
-            },
+            .panAndBoxSelect(state, onBoxSelect),
     ) {
         Box(
             modifier = Modifier
@@ -552,7 +560,7 @@ private fun Modifier.modifierTracking(state: GraphCanvasState) = pointerInput(Un
  */
 private fun Modifier.secondaryGesture(
     state: GraphCanvasState,
-    onMenu: (Offset) -> Unit,
+    onMenu: State<(Offset) -> Unit>,
 ) = pointerInput(state) {
     awaitEachGesture {
         val event = awaitPointerEvent(PointerEventPass.Initial)
@@ -576,7 +584,7 @@ private fun Modifier.secondaryGesture(
             if (travelled) state.panBy(change.position - last)
             last = change.position
         }
-        if (secondary && !travelled) onMenu(down.position)
+        if (secondary && !travelled) onMenu.value(down.position)
     }
 }
 
@@ -660,7 +668,7 @@ private fun Modifier.scrollAndZoom(state: GraphCanvasState) = pointerInput(Unit)
  */
 private fun Modifier.panAndBoxSelect(
     state: GraphCanvasState,
-    onBoxSelect: (Rect) -> Unit,
+    onBoxSelect: State<(Rect) -> Unit>,
 ) = pointerInput(state) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = true)
@@ -716,7 +724,7 @@ private fun Modifier.panAndBoxSelect(
         val box = state.marquee
         state.marquee = null
         if (moved && !panning && !pinched && box != null) {
-            onBoxSelect(
+            onBoxSelect.value(
                 Rect(state.toCanvas(box.topLeft), state.toCanvas(box.bottomRight)),
             )
         }
