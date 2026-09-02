@@ -277,7 +277,7 @@ fun scoreAndRankIssues(graphData: GraphData, count: Int = 5): List<ScoredIssue> 
     return scored.sortedByDescending { it.score }.take(count)
 }
 
-enum class GroupBy { STATE, PRIORITY, ASSIGNEE, TEAM, PROJECT }
+enum class GroupBy { STATE, PRIORITY, ASSIGNEE, TEAM, PROJECT, MILESTONE }
 
 /** Groups issues by the given key, each group sorted with "no priority" sinking last. */
 fun groupIssues(nodes: List<IssueNode>, groupBy: GroupBy): Map<String, List<IssueNode>> {
@@ -286,6 +286,7 @@ fun groupIssues(nodes: List<IssueNode>, groupBy: GroupBy): Map<String, List<Issu
         GroupBy.ASSIGNEE -> n.assignee ?: "Unassigned"
         GroupBy.TEAM -> n.team
         GroupBy.PROJECT -> n.project ?: "No project"
+        GroupBy.MILESTONE -> n.milestone ?: "No milestone"
         GroupBy.STATE -> n.state
     }
 

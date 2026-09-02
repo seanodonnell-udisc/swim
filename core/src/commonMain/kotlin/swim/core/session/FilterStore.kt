@@ -15,7 +15,7 @@ import swim.core.model.ResolvedLinearUrl
 
 /** How the graph groups its nodes. Grouping is a view setting, not part of the query. */
 @Serializable
-enum class GraphGrouping { NONE, TEAM, PROJECT, LABEL }
+enum class GraphGrouping { NONE, TEAM, PROJECT, LABEL, MILESTONE }
 
 /** The filter bar as a whole: what to ask Linear for, and whether to ask yet. */
 data class FilterState(

@@ -25,6 +25,7 @@ private const val PAGE_ONE = """{"data":{"issues":{"nodes":[
    "url":"https://linear.app/w/issue/ENG-1","createdAt":"2026-01-01T00:00:00.000Z",
    "updatedAt":"2026-01-02T00:00:00.000Z","state":{"name":"Todo","type":"unstarted"},
    "team":{"key":"ENG"},"assignee":{"name":"Ada"},"project":{"name":"Core"},
+   "projectMilestone":{"id":"pm-1","name":"M2 Clients"},
    "labels":{"nodes":[{"name":"bug"}]},
    "attachments":{"nodes":[{"url":"https://github.com/acme/app/pull/7","title":"Fix it"},
                            {"url":"https://example.com/doc","title":"Doc"}]},
@@ -100,12 +101,17 @@ class LinearClientTest {
         val first = nodes.first()
         assertEquals("Ada", first.assignee)
         assertEquals("Core", first.project)
+        assertEquals("pm-1", first.milestoneId)
+        assertEquals("M2 Clients", first.milestone)
         assertEquals(1, first.priority)
         assertEquals(3, first.estimate)
         assertEquals(listOf("bug"), first.labels)
         assertEquals(1, first.pullRequests?.size)
         assertEquals("https://github.com/acme/app/pull/7", first.pullRequests?.first()?.url)
         assertNull(nodes[1].assignee)
+        // No projectMilestone key on the wire at all: absent, not just null-named, must decode clean.
+        assertNull(nodes[1].milestone)
+        assertNull(nodes[1].milestoneId)
         // Linear's native duplicate state is closed, so it reads as canceled.
         assertEquals(WorkflowStateType.CANCELED, nodes[2].stateType)
     }

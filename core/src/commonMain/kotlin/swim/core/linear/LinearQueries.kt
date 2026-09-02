@@ -17,6 +17,7 @@ internal const val ISSUE_NODE_FIELDS: String = """
   team { key }
   assignee { id name }
   project { name }
+  projectMilestone { id name }
   labels { nodes { name } }
   attachments(first: 20) { nodes { url title } }
 """

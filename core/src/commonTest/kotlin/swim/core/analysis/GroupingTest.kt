@@ -39,4 +39,11 @@ class GroupingTest {
         val groups = groupIssues(nodes, GroupBy.PRIORITY)
         assertEquals(setOf("No priority", "Urgent"), groups.keys)
     }
+
+    @Test
+    fun groupsByMilestoneFallingBackToNoMilestone() {
+        val nodes = listOf(issue("A", milestone = "M1 Foundations"), issue("B", milestone = null))
+        val groups = groupIssues(nodes, GroupBy.MILESTONE)
+        assertEquals(setOf("M1 Foundations", "No milestone"), groups.keys)
+    }
 }

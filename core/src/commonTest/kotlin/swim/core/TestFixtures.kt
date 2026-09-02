@@ -13,6 +13,7 @@ fun issue(
     stateType: WorkflowStateType = WorkflowStateType.UNSTARTED,
     state: String = "Todo",
     project: String? = null,
+    milestone: String? = null,
     assignee: String? = null,
     labels: List<String> = emptyList(),
 ): IssueNode = IssueNode(
@@ -24,6 +25,7 @@ fun issue(
     priority = priority,
     team = team,
     project = project,
+    milestone = milestone,
     assignee = assignee,
     labels = labels,
 )
