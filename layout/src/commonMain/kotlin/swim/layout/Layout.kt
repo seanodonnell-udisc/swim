@@ -15,6 +15,8 @@ data class LayoutParams(
     val siblingGap: Float = 40f,
     val treeGap: Float = 120f,
     val relatedAffinityWeight: Float = 0f,
+    /** Trees pack left to right and wrap to a new shelf past this width. */
+    val maxRowWidth: Float = 2600f,
 )
 
 /** The top-left corner of a node. */
@@ -63,13 +65,15 @@ fun layout(
     )
 
     val trees = roots.map { positionTree(it, children, widths, params.siblingGap) }
-    val centers = packTrees(trees, widths, params.treeGap)
     val tops = rowTops(nodes, levels, params.levelGap)
+    val bottoms = nodes.associate { it.id to tops.getValue(levels.getValue(it.id)) + it.height }
+    val packed = packTrees(trees, widths, bottoms, params.treeGap, params.maxRowWidth)
 
     return LayoutResult(
         positions = nodes.associate { node ->
-            val center = centers.getValue(node.id)
-            node.id to Position(center - node.width / 2f, tops.getValue(levels.getValue(node.id)))
+            val center = packed.centers.getValue(node.id)
+            val shelf = packed.shelfTops.getValue(node.id)
+            node.id to Position(center - node.width / 2f, shelf + tops.getValue(levels.getValue(node.id)))
         },
         crossLinks = forest.crossLinks + cycleEdges,
         cycleEdges = cycleEdges,
