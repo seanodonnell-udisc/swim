@@ -2,7 +2,7 @@
 id: 0001
 title: Layout playground
 area: layout
-status: todo
+status: done
 priority: P1
 depends_on: []
 created: 2026-09-01
@@ -16,9 +16,12 @@ The layout algorithm is user-designed, not a port. The user needs a fast loop to
 placement rules against sample graphs before the algorithm is final.
 
 ## Acceptance
-- [ ] A desktop window shows a sample graph laid out by `swim.layout.layout`.
-- [ ] Compose Hot Reload works, so a code change updates the window without a restart.
-- [ ] At least one sample graph ships with the playground.
+- [x] A desktop window shows a sample graph laid out by `swim.layout.layout`.
+- [x] Compose Hot Reload works, so a code change updates the window without a restart.
+- [x] At least one sample graph ships with the playground.
 
 ## Notes
 See `docs/spec.md` §6 for the tidy blocker-tree rules this playground is for.
+
+`:layout` is one file per step: `cycles.kt`, `layering.kt`, `forest.kt`, `position.kt`,
+`pack.kt`, `affinity.kt`. Rewrite `position.kt` alone to change the placement rule.

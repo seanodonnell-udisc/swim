@@ -38,5 +38,5 @@ dependencyResolutionManagement {
     }
 }
 
-include(":core", ":layout", ":shared", ":androidApp", ":desktopApp", ":cli")
+include(":core", ":layout", ":shared", ":androidApp", ":desktopApp", ":cli", ":playground")
 // iosApp is an Xcode project that consumes :shared's ComposeApp framework.
