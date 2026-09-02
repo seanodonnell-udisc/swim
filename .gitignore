@@ -10,3 +10,4 @@ local.properties
 iosApp/build/
 xcuserdata/
 *.xcworkspace/xcuserdata/
+.idea/
