@@ -30,7 +30,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(projects.core)
-            implementation(projects.layout)
+            api(projects.layout)
             implementation(libs.compose.runtime)
             implementation(libs.compose.foundation)
             implementation(libs.compose.ui)
@@ -40,6 +40,10 @@ kotlin {
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
+        }
+        jvmTest.dependencies {
+            // ImageComposeScene renders the canvas headlessly.
+            implementation(compose.desktop.currentOs)
         }
     }
 }
