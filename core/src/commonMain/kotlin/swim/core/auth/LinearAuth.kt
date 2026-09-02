@@ -1,5 +1,6 @@
 package swim.core.auth
 
+import swim.core.config.envVar
 import swim.core.linear.AuthHeaderProvider
 import swim.core.linear.apiKeyAuth
 import swim.core.linear.oauthAuth
@@ -12,7 +13,12 @@ object LinearAuth {
      * An OAuth access token that has expired is refreshed once, stored, and then used.
      */
     fun provider(store: TokenStore, oauth: LinearOAuth? = null): AuthHeaderProvider? {
-        val stored = store.getLinear() ?: return null
+        envVar("LINEAR_API_KEY")?.takeIf { it.isNotBlank() }?.let { return apiKeyAuth(it) }
+        val stored = try {
+            store.getLinear()
+        } catch (e: Exception) {
+            throw AuthError("Cannot read the credential store: ${e.message}. Set LINEAR_API_KEY, or unlock the keychain.")
+        } ?: return null
         if (stored.mode == LinearAuthMode.API_KEY) return apiKeyAuth(stored.accessToken)
 
         return oauthAuth {
