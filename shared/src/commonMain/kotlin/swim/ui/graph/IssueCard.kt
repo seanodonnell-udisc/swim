@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -33,11 +32,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
@@ -51,6 +49,9 @@ import swim.core.model.PRIORITY_LABELS
 import swim.core.model.PrStatus
 import swim.core.model.UserSummary
 
+/** Which handle a relation drag started from. The side decides the relation it suggests. */
+internal enum class LinkSide { BOTTOM, LEFT, RIGHT }
+
 /** What one card reports back to the canvas. Deltas arrive in canvas units. */
 internal class CardHandlers(
     val onSelect: () -> Unit,
@@ -58,7 +59,7 @@ internal class CardHandlers(
     val onDragStart: () -> Unit,
     val onDrag: (Offset) -> Unit,
     val onDragEnd: () -> Unit,
-    val onLinkStart: () -> Unit,
+    val onLinkStart: (LinkSide) -> Unit,
     val onLink: (Offset) -> Unit,
     val onLinkEnd: () -> Unit,
 )
@@ -68,7 +69,8 @@ internal fun IssueCard(
     node: IssueNode,
     ready: Boolean,
     selected: Boolean,
-    simplified: Boolean,
+    /** True while a relation drag is running from this card, which keeps its handles alive. */
+    linking: Boolean,
     prStatuses: Map<String, PrStatus>,
     users: List<UserSummary>,
     handlers: CardHandlers,
@@ -87,7 +89,9 @@ internal fun IssueCard(
         }
     }
 
-    Box(modifier = modifier) {
+    // The handles live inside the card box, and the box carries the hover, so moving onto a
+    // handle cannot take the hover away and make the handle disappear under the pointer.
+    Box(modifier = modifier.hoverable(interaction)) {
         Column(
             modifier = Modifier
                 .size(GraphCanvasDefaults.NodeWidth.dp, GraphCanvasDefaults.NodeHeight.dp)
@@ -101,7 +105,6 @@ internal fun IssueCard(
                     color = if (selected) Swim.Focus else categoryBorderColor(category),
                     shape = RoundedCornerShape(6.dp),
                 )
-                .hoverable(interaction)
                 .pointerInput(node.identifier) {
                     detectTapGestures(
                         onTap = { handlers.onSelect() },
@@ -118,71 +121,52 @@ internal fun IssueCard(
                         handlers.onDrag(amount / density)
                     }
                 }
-                .then(
-                    if (simplified) {
-                        Modifier.clip(RoundedCornerShape(6.dp)).drawBehind {
-                            drawRect(
-                                color = categoryColor(category),
-                                size = Size(14.dp.toPx(), size.height),
-                            )
-                        }
-                    } else {
-                        Modifier
-                    },
-                )
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            if (simplified) {
-                SimpleBody(node)
-            } else {
-                CardHeader(node, category, ready, copied) {
-                    copied = true
-                    callbacks.onCopyId(node.identifier)
-                }
-                Text(
-                    text = node.title,
-                    color = Swim.Text,
-                    fontSize = 12.sp,
-                    lineHeight = 15.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
-                )
-                Spacer(Modifier.weight(1f))
-                CardFooter(node, category, prStatuses, users, callbacks)
+            CardHeader(node, category, ready, copied) {
+                copied = true
+                callbacks.onCopyId(node.identifier)
             }
+            Text(
+                text = node.title,
+                color = Swim.Text,
+                fontSize = 12.sp,
+                lineHeight = 15.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
+            )
+            Spacer(Modifier.weight(1f))
+            CardFooter(node, category, prStatuses, users, callbacks)
         }
 
-        LinkHandle(
-            density = density,
-            handlers = handlers,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 2.dp)
-                .alpha(if (hovered) 1f else 0.35f),
-        )
-        if (hovered) CardTooltip(node.title, Modifier.align(Alignment.TopStart))
-    }
-}
-
-/** What a card shows when it is too small to read: the priority dot and the identifier only. */
-@Composable
-private fun SimpleBody(node: IssueNode) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.fillMaxWidth().fillMaxHeight().padding(start = 8.dp),
-    ) {
-        Box(Modifier.size(16.dp).background(priorityColor(node.priority), CircleShape))
-        Text(
-            text = node.identifier,
-            color = Swim.Cyan,
-            fontSize = 26.sp,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-        )
+        // A drag that leaves the card takes the hover with it. Dropping the handle out of the
+        // composition then cancels the very gesture it started, so it stays while linking.
+        if (hovered || linking) {
+            LinkHandle(
+                side = LinkSide.BOTTOM,
+                color = Swim.Red,
+                density = density,
+                handlers = handlers,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 2.dp),
+            )
+            LinkHandle(
+                side = LinkSide.LEFT,
+                color = Swim.Muted,
+                density = density,
+                handlers = handlers,
+                modifier = Modifier.align(Alignment.CenterStart).padding(start = 2.dp),
+            )
+            LinkHandle(
+                side = LinkSide.RIGHT,
+                color = Swim.Muted,
+                density = density,
+                handlers = handlers,
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 2.dp),
+            )
+            if (hovered) CardTooltip(node.title, Modifier.align(Alignment.TopStart))
+        }
     }
 }
 
@@ -212,6 +196,7 @@ private fun CardHeader(
             color = if (copied) Swim.Green else Swim.Muted,
             fontSize = 11.sp,
             modifier = Modifier
+                .pointerHoverIcon(PointerIcon.Hand)
                 .pointerInput(node.identifier) {
                     detectTapGestures(onTap = { onCopy() })
                 }
@@ -285,6 +270,7 @@ private fun PrChipView(chip: PrChip, callbacks: GraphCanvasCallbacks) {
                 .background(Swim.Border, RoundedCornerShape(3.dp))
                 .padding(horizontal = 3.dp, vertical = 1.dp)
                 .hoverable(interaction)
+                .pointerHoverIcon(PointerIcon.Hand)
                 .pointerInput(chip.url) {
                     detectTapGestures(onTap = { callbacks.onOpenUrl(chip.url) })
                 },
@@ -315,6 +301,7 @@ private fun AssigneePicker(
             maxLines = 1,
             modifier = Modifier
                 .widthIn(max = 54.dp)
+                .pointerHoverIcon(PointerIcon.Hand)
                 .pointerInput(node.identifier) {
                     detectTapGestures(onTap = { open = true })
                 },
@@ -357,16 +344,24 @@ private fun CardTooltip(text: String, modifier: Modifier = Modifier) {
     )
 }
 
+/** A connection handle. The bottom one suggests blocks; the two sides suggest related. */
 @Composable
-private fun LinkHandle(density: Float, handlers: CardHandlers, modifier: Modifier = Modifier) {
+private fun LinkHandle(
+    side: LinkSide,
+    color: Color,
+    density: Float,
+    handlers: CardHandlers,
+    modifier: Modifier = Modifier,
+) {
     Box(
         modifier = modifier
             .size(11.dp)
-            .background(Swim.Red, CircleShape)
+            .background(color, CircleShape)
             .border(1.dp, Swim.Bg, CircleShape)
-            .pointerInput(Unit) {
+            .pointerHoverIcon(PointerIcon.Crosshair)
+            .pointerInput(side) {
                 detectDragGestures(
-                    onDragStart = { handlers.onLinkStart() },
+                    onDragStart = { handlers.onLinkStart(side) },
                     onDragEnd = { handlers.onLinkEnd() },
                     onDragCancel = { handlers.onLinkEnd() },
                 ) { change, amount ->

@@ -10,6 +10,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import swim.core.model.RelationType
 import kotlin.math.min
 
 /** The chooser the canvas has open, if any. Both anchor at a point in screen pixels. */
@@ -20,8 +21,24 @@ internal sealed interface CanvasPanel {
     data class Edit(val edge: EdgeKey, override val at: Offset) : CanvasPanel
 }
 
-/** A relation drag in flight, from a card's bottom handle to wherever the pointer is. */
-internal data class LinkDrag(val from: String, val at: Offset)
+/** The context menu the canvas has open, if any. [at] is a point in screen pixels. */
+internal sealed interface CanvasMenu {
+    val at: Offset
+
+    data class Node(val id: String, override val at: Offset) : CanvasMenu
+    data class Edge(val edge: EdgeKey, override val at: Offset) : CanvasMenu
+    data class Empty(override val at: Offset) : CanvasMenu
+}
+
+/** A relation drag in flight, from one of a card's handles to wherever the pointer is. */
+internal data class LinkDrag(val from: String, val at: Offset, val type: RelationType)
+
+/** Pick-target mode: the relation is chosen, and the next card click names the other end. */
+internal data class PickTarget(
+    val from: String,
+    val type: RelationType,
+    val reversed: Boolean,
+)
 
 /**
  * Pan, zoom, and the transient gesture state of one canvas. Canvas space is dp; screen space is
@@ -39,9 +56,20 @@ class GraphCanvasState internal constructor() {
     internal var contentBounds by mutableStateOf<Rect?>(null)
     internal var marquee by mutableStateOf<Rect?>(null)
     internal var panel by mutableStateOf<CanvasPanel?>(null)
+    internal var menu by mutableStateOf<CanvasMenu?>(null)
+    internal var pick by mutableStateOf<PickTarget?>(null)
     internal var link by mutableStateOf<LinkDrag?>(null)
     internal var dragIds by mutableStateOf<Set<String>>(emptySet())
     internal var dragDelta by mutableStateOf(Offset.Zero)
+
+    /**
+     * Where the pointer is, in screen pixels, or null before it has entered. Only the draw
+     * lambdas read it, so a move redraws the edges and never recomposes a card.
+     */
+    internal var pointer by mutableStateOf<Offset?>(null)
+
+    /** Whether the gestures-and-shortcuts overlay is up. The shell shows it once on first run. */
+    var shortcutsVisible by mutableStateOf(false)
 
     internal var additive = false
     internal var spaceDown = false
@@ -76,6 +104,11 @@ class GraphCanvasState internal constructor() {
 
     fun zoomOut() = zoomBy(1f / 1.2f, viewportCenter())
 
+    /** Back to 1:1 about the middle of the viewport. The zoom readout does this when clicked. */
+    fun resetZoom() {
+        if (scale > 0f) zoomBy(1f / scale, viewportCenter())
+    }
+
     /**
      * Scales the graph to fit, never above 1:1. An axis with room to spare anchors to the start
      * edge with the standard padding, so a wide short graph hugs the top left instead of floating.
@@ -97,9 +130,11 @@ class GraphCanvasState internal constructor() {
         ) - bounds.topLeft * unit
     }
 
-    /** Closes the relation chooser and the edge panel. */
+    /** Closes every transient surface: the relation chooser, a context menu, and pick mode. */
     fun dismissPanels() {
         panel = null
+        menu = null
+        pick = null
         link = null
     }
 

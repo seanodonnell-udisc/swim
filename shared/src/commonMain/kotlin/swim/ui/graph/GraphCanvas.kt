@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -31,6 +32,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -41,24 +43,31 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
 import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.ui.input.pointer.isMetaPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.isTertiaryPressed
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -95,20 +104,9 @@ data class GraphCanvasCallbacks(
     val onRemoveRelation: (edge: EdgeKey) -> Unit = {},
     val onNodesMoved: (Map<String, Position>) -> Unit = {},
     val onSelectionChange: (Set<String>) -> Unit = {},
-)
-
-/** One entry in the relation chooser. A reversed blocks relation reads as "blocked by". */
-private data class RelationIntent(
-    val label: String,
-    val type: RelationType,
-    val reversed: Boolean,
-)
-
-private val RELATION_INTENTS = listOf(
-    RelationIntent("Blocks", RelationType.BLOCKS, false),
-    RelationIntent("Blocked by", RelationType.BLOCKS, true),
-    RelationIntent("Related", RelationType.RELATED, false),
-    RelationIntent("Duplicate", RelationType.DUPLICATE, false),
+    /** The canvas context menu asks for these two; the caller owns both. */
+    val onRelayout: () -> Unit = {},
+    val onReload: () -> Unit = {},
 )
 
 /**
@@ -123,8 +121,10 @@ fun GraphCanvas(
     readySet: Set<String> = emptySet(),
     prStatuses: Map<String, PrStatus> = emptyMap(),
     users: List<UserSummary> = emptyList(),
-    crossLinks: Set<EdgeKey> = emptySet(),
-    cycleEdges: Set<EdgeKey> = emptySet(),
+    // ponytail: reserved. Cycle detection is still worth having, and a future opt-in warning
+    // style can read these, but every blocks edge draws the same today.
+    @Suppress("UNUSED_PARAMETER") crossLinks: Set<EdgeKey> = emptySet(),
+    @Suppress("UNUSED_PARAMETER") cycleEdges: Set<EdgeKey> = emptySet(),
     selection: Set<String> = emptySet(),
     state: GraphCanvasState = rememberGraphCanvasState(),
     callbacks: GraphCanvasCallbacks = GraphCanvasCallbacks(),
@@ -135,11 +135,8 @@ fun GraphCanvas(
     val ids = remember(graph) { graph.nodes.map { it.identifier } }
     val focus = remember { FocusRequester() }
 
-    val detours = remember(crossLinks, cycleEdges) { crossLinks + cycleEdges }
-    // Only flips at the threshold, so a zoom frame does not recompose every card.
-    val simplified by remember(state) {
-        derivedStateOf { state.scale < GraphCanvasDefaults.SimplifiedBelow }
-    }
+    // Only the source id, so a link-drag frame does not recompose every card.
+    val linkingFrom by remember(state) { derivedStateOf { state.link?.from } }
 
     val rects = buildRects(positions, ids, state.dragIds, state.dragDelta)
     val bounds = contentBoundsOf(rects.values)
@@ -166,8 +163,11 @@ fun GraphCanvas(
             // would leave the canvas panning for good.
             .onFocusChanged { if (!it.isFocused) state.spaceDown = false }
             .focusable()
-            .onPreviewKeyEvent { event -> handleKey(event.key, event.type, state, callbacks) }
+            .onPreviewKeyEvent { event -> handleKey(event, state, callbacks) }
+            .pointerHoverIcon(if (state.pick != null) PointerIcon.Crosshair else PointerIcon.Default)
             .modifierTracking(state)
+            .secondaryGesture(state) { at -> state.menu = menuAt(at, state, rects, graph) }
+            .pickTarget(state, rects, callbacks)
             .scrollAndZoom(state)
             .panAndBoxSelect(state) { box ->
                 callbacks.onSelectionChange(
@@ -175,7 +175,7 @@ fun GraphCanvas(
                         if (state.additive) selection else emptySet(),
                 )
             }
-            .canvasTaps(state, rects, graph, detours, callbacks),
+            .canvasTaps(state, rects, graph, callbacks),
     ) {
         Box(
             modifier = Modifier
@@ -192,8 +192,20 @@ fun GraphCanvas(
             underlay()
             Canvas(Modifier.fillMaxSize()) {
                 scale(density, pivot = Offset.Zero) {
-                    drawEdges(graph, rects, cycleEdges, crossLinks)
-                    state.link?.let { drawLinkDrag(rects[it.from], it.at) }
+                    // The pointer is read here, not in the composition, so a mouse move redraws
+                    // the edges and never recomposes a card.
+                    drawEdges(graph, rects, hoveredEdge(state, graph, rects))
+                    // Both of these are affordances, not graph content, so they keep the same
+                    // weight on screen at every zoom.
+                    val zoom = state.scale
+                    state.link?.let { drawGhostLink(rects[it.from], it.at, it.type, zoom) }
+                    state.pick?.let { pick ->
+                        val source = rects[pick.from]
+                        drawPickRing(source, zoom)
+                        state.pointer?.let {
+                            drawGhostLink(source, state.toCanvas(it), pick.type, zoom)
+                        }
+                    }
                 }
             }
             Layout(
@@ -205,7 +217,7 @@ fun GraphCanvas(
                                 node = nodes.getValue(id),
                                 ready = id in readySet,
                                 selected = id in selection,
-                                simplified = simplified,
+                                linking = id == linkingFrom,
                                 prStatuses = prStatuses,
                                 users = users,
                                 handlers = remember(id, selection, positions, callbacks) {
@@ -242,10 +254,24 @@ fun GraphCanvas(
             rects = rects,
             nodes = nodes,
             readySet = readySet,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 36.dp),
         )
 
+        HintBar(state, selection.size, Modifier.align(Alignment.BottomCenter))
+        if (state.pick != null) PickHint(Modifier.align(Alignment.TopCenter))
+
         state.panel?.let { panel -> RelationChooser(panel, state, callbacks) }
+        state.menu?.let { menu ->
+            ContextMenuSurface(
+                menu = menu,
+                entries = menuEntries(menu, graph, nodes, users, ids, state, callbacks),
+                viewportHeight = Dp(state.viewport.height / density),
+                viewportWidth = Dp(state.viewport.width / density),
+                density = density,
+                onDismiss = { state.menu = null },
+            )
+        }
+        if (state.shortcutsVisible) ShortcutsOverlay { state.shortcutsVisible = false }
     }
 }
 
@@ -264,6 +290,34 @@ private fun buildRects(
     id to nodeRect(shifted)
 }.toMap()
 
+/** Which menu a right click at [at] opens: the card under it, the edge under it, or the canvas. */
+private fun menuAt(
+    at: Offset,
+    state: GraphCanvasState,
+    rects: Map<String, Rect>,
+    graph: GraphData,
+): CanvasMenu {
+    val point = state.toCanvas(at)
+    rects.entries.firstOrNull { it.value.contains(point) }
+        ?.let { return CanvasMenu.Node(it.key, at) }
+    hitEdge(graph, rects, point, edgeTolerance(state))
+        ?.let { return CanvasMenu.Edge(it, at) }
+    return CanvasMenu.Empty(at)
+}
+
+/** The hit band around an edge. `toCanvas` divides by scale AND density, so this must too. */
+private fun edgeTolerance(state: GraphCanvasState): Float = 8f / (state.scale * state.density)
+
+private fun hoveredEdge(
+    state: GraphCanvasState,
+    graph: GraphData,
+    rects: Map<String, Rect>,
+): EdgeKey? {
+    if (state.pick != null || state.link != null || state.menu != null) return null
+    val at = state.pointer ?: return null
+    return hitEdge(graph, rects, state.toCanvas(at), edgeTolerance(state))
+}
+
 private fun cardHandlers(
     id: String,
     state: GraphCanvasState,
@@ -273,7 +327,13 @@ private fun cardHandlers(
 ) = CardHandlers(
     onSelect = {
         state.dismissPanels()
-        callbacks.onSelectionChange(if (state.additive) selection + id else setOf(id))
+        callbacks.onSelectionChange(
+            when {
+                !state.additive -> setOf(id)
+                id in selection -> selection - id
+                else -> selection + id
+            }
+        )
     },
     onOpen = { callbacks.onOpenIssue(id) },
     onDragStart = {
@@ -294,16 +354,15 @@ private fun cardHandlers(
         state.dragDelta = Offset.Zero
         if (moved.isNotEmpty()) callbacks.onNodesMoved(moved)
     },
-    onLinkStart = {
+    onLinkStart = { side ->
         state.dismissPanels()
         val start = positions[id] ?: return@CardHandlers
-        state.link = LinkDrag(
-            id,
-            Offset(
-                start.x + GraphCanvasDefaults.NodeWidth / 2f,
-                start.y + GraphCanvasDefaults.NodeHeight,
-            ),
-        )
+        val rect = nodeRect(start)
+        state.link = when (side) {
+            LinkSide.BOTTOM -> LinkDrag(id, Offset(rect.center.x, rect.bottom), RelationType.BLOCKS)
+            LinkSide.LEFT -> LinkDrag(id, Offset(rect.left, rect.center.y), RelationType.RELATED)
+            LinkSide.RIGHT -> LinkDrag(id, Offset(rect.right, rect.center.y), RelationType.RELATED)
+        }
     },
     onLink = { delta -> state.link?.let { state.link = it.copy(at = it.at + delta) } },
     onLinkEnd = {
@@ -320,20 +379,27 @@ private fun cardHandlers(
 )
 
 private fun handleKey(
-    pressed: Key,
-    type: KeyEventType,
+    event: KeyEvent,
     state: GraphCanvasState,
     callbacks: GraphCanvasCallbacks,
 ): Boolean {
-    if (pressed == Key.Spacebar) {
-        state.spaceDown = type == KeyEventType.KeyDown
+    if (event.key == Key.Spacebar) {
+        state.spaceDown = event.type == KeyEventType.KeyDown
         return true
     }
-    if (type != KeyEventType.KeyDown) return false
-    return when (pressed) {
+    if (event.type != KeyEventType.KeyDown) return false
+    return when (event.key) {
+        Key.Slash -> {
+            if (!event.isShiftPressed) return false
+            state.shortcutsVisible = !state.shortcutsVisible
+            true
+        }
         Key.Escape -> {
+            val hadSurface = state.shortcutsVisible ||
+                state.pick != null || state.menu != null || state.panel != null
+            state.shortcutsVisible = false
             state.dismissPanels()
-            callbacks.onSelectionChange(emptySet())
+            if (!hadSurface) callbacks.onSelectionChange(emptySet())
             true
         }
         Key.Equals, Key.Plus, Key.NumPadAdd -> {
@@ -360,11 +426,79 @@ private fun Modifier.modifierTracking(state: GraphCanvasState) = pointerInput(Un
             val modifiers = event.keyboardModifiers
             state.additive =
                 modifiers.isMetaPressed || modifiers.isCtrlPressed || modifiers.isShiftPressed
+            when (event.type) {
+                PointerEventType.Exit -> state.pointer = null
+                else -> event.changes.lastOrNull()?.let { state.pointer = it.position }
+            }
         }
     }
 }
 
-/** Two-finger scroll pans; ctrl or cmd with scroll zooms about the pointer. */
+/**
+ * The secondary and middle buttons, taken before any card sees them. A drag pans; a press that
+ * does not travel opens the context menu. On macOS a ctrl+click arrives here too, because Compose
+ * reports it as a secondary press.
+ *
+ * `awaitFirstDown` answers only to the primary button on desktop, so no other handler in the
+ * canvas — including a card's tap and drag detectors — reacts to these two buttons at all.
+ */
+private fun Modifier.secondaryGesture(
+    state: GraphCanvasState,
+    onMenu: (Offset) -> Unit,
+) = pointerInput(state) {
+    awaitEachGesture {
+        val event = awaitPointerEvent(PointerEventPass.Initial)
+        val down = event.changes.firstOrNull { it.changedToDownIgnoreConsumed() }
+            ?: return@awaitEachGesture
+        val secondary = event.buttons.isSecondaryPressed
+        if (!secondary && !event.buttons.isTertiaryPressed) return@awaitEachGesture
+        down.consume()
+        var travelled = false
+        var last = down.position
+        while (true) {
+            val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                .firstOrNull { it.id == down.id } ?: break
+            change.consume()
+            if (!change.pressed) break
+            if (!travelled &&
+                (change.position - down.position).getDistance() > viewConfiguration.touchSlop
+            ) {
+                travelled = true
+            }
+            if (travelled) state.panBy(change.position - last)
+            last = change.position
+        }
+        if (secondary && !travelled) onMenu(down.position)
+    }
+}
+
+/** While a relation is waiting for its other end, the next click names it and nothing else. */
+private fun Modifier.pickTarget(
+    state: GraphCanvasState,
+    rects: Map<String, Rect>,
+    callbacks: GraphCanvasCallbacks,
+) = pointerInput(state, rects) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        val pick = state.pick ?: return@awaitEachGesture
+        down.consume()
+        while (true) {
+            val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                .firstOrNull { it.id == down.id } ?: break
+            change.consume()
+            if (!change.pressed) break
+        }
+        state.pick = null
+        val point = state.toCanvas(down.position)
+        val target = rects.entries
+            .firstOrNull { (id, rect) -> id != pick.from && rect.contains(point) }?.key
+        if (target != null) {
+            callbacks.onCreateRelation(pick.from, target, pick.type, pick.reversed)
+        }
+    }
+}
+
+/** Two-finger scroll pans both axes; ctrl or cmd with scroll zooms about the pointer. */
 private fun Modifier.scrollAndZoom(state: GraphCanvasState) = pointerInput(Unit) {
     awaitPointerEventScope {
         while (true) {
@@ -384,8 +518,8 @@ private fun Modifier.scrollAndZoom(state: GraphCanvasState) = pointerInput(Unit)
 }
 
 /**
- * Middle drag, right drag, and space with left drag pan. A plain left drag on empty canvas draws
- * a selection box. Two pointers pinch.
+ * Space with left drag pans. A plain left drag on empty canvas draws a selection box. Two
+ * pointers pinch. The secondary and middle buttons are handled before this, in [secondaryGesture].
  */
 private fun Modifier.panAndBoxSelect(
     state: GraphCanvasState,
@@ -393,8 +527,7 @@ private fun Modifier.panAndBoxSelect(
 ) = pointerInput(state) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = true)
-        val buttons = currentEvent.buttons
-        val panning = state.spaceDown || buttons.isSecondaryPressed || buttons.isTertiaryPressed
+        val panning = state.spaceDown
         val origin = down.position
         var centroid = origin
         var spread = 0f
@@ -458,19 +591,18 @@ private fun Modifier.canvasTaps(
     state: GraphCanvasState,
     rects: Map<String, Rect>,
     graph: GraphData,
-    detours: Set<EdgeKey>,
     callbacks: GraphCanvasCallbacks,
-) = pointerInput(state, rects, detours) {
+) = pointerInput(state, rects) {
     detectTapGestures(
         onDoubleTap = { state.fitToContent() },
         onTap = { position ->
             val point = state.toCanvas(position)
-            // toCanvas divides by scale AND density, so the tolerance must too.
-            val edge = hitEdge(graph, rects, point, 8f / (state.scale * state.density), detours)
+            val edge = hitEdge(graph, rects, point, edgeTolerance(state))
             if (edge == null) {
                 state.dismissPanels()
                 callbacks.onSelectionChange(emptySet())
             } else {
+                state.dismissPanels()
                 state.panel = CanvasPanel.Edit(edge, position)
             }
         },
@@ -483,80 +615,123 @@ internal fun hitEdge(
     rects: Map<String, Rect>,
     point: Offset,
     tolerance: Float,
-    detours: Set<EdgeKey> = emptySet(),
 ): EdgeKey? {
     var best: EdgeKey? = null
     var bestDistance = tolerance
-    val centerX = contentBoundsOf(rects.values)?.center?.x ?: 0f
     for (edge in graph.edges) {
         val from = rects[edge.from] ?: continue
         val to = rects[edge.to] ?: continue
-        val key = edge.key()
-        val (a, b) = routeFor(edge.type, from, to, key in detours, centerX)
-        val distance = distanceToPolyline(edgeSamples(a, b), point)
+        // The corners, not the rounded path. A corner cuts at most the 5-unit bend radius.
+        val distance = distanceToPolyline(edgePoints(edge.type, from, to), point)
         if (distance <= bestDistance) {
             bestDistance = distance
-            best = key
+            best = edge.key()
         }
     }
     return best
 }
 
+internal fun edgeColor(type: RelationType): Color = when (type) {
+    RelationType.BLOCKS -> Swim.Red
+    RelationType.RELATED -> Swim.Muted
+    RelationType.DUPLICATE -> Swim.Purple
+}
+
+private fun edgeDashes(type: RelationType): FloatArray? = when (type) {
+    RelationType.BLOCKS -> null
+    RelationType.RELATED -> floatArrayOf(5f, 5f)
+    RelationType.DUPLICATE -> floatArrayOf(3f, 3f)
+}
+
 private fun DrawScope.drawEdges(
     graph: GraphData,
     rects: Map<String, Rect>,
-    cycleEdges: Set<EdgeKey>,
-    crossLinks: Set<EdgeKey>,
+    hovered: EdgeKey?,
 ) {
-    val centerX = contentBoundsOf(rects.values)?.center?.x ?: 0f
     for (edge in graph.edges) {
         val from = rects[edge.from] ?: continue
         val to = rects[edge.to] ?: continue
-        val key = edge.key()
-        val cycle = key in cycleEdges
-        val cross = key in crossLinks
-        val (a, b) = routeFor(edge.type, from, to, cycle || cross, centerX)
-        val color = when (edge.type) {
-            RelationType.BLOCKS -> Swim.Red
-            RelationType.RELATED -> Swim.Muted
-            RelationType.DUPLICATE -> Swim.Purple
-        }
-        val width = when {
-            cycle -> 3f
-            edge.type == RelationType.BLOCKS -> 2f
-            else -> 1f
-        }
-        val dashes = when {
-            cycle || cross -> floatArrayOf(6f, 4f)
-            edge.type == RelationType.RELATED -> floatArrayOf(5f, 5f)
-            edge.type == RelationType.DUPLICATE -> floatArrayOf(3f, 3f)
-            else -> null
-        }
+        val hover = edge.key() == hovered
+        val ends = edgeEnds(edge.type, from, to)
+        val points = smoothStepPoints(
+            source = ends.source,
+            sourcePosition = ends.sourcePosition,
+            target = ends.target,
+            targetPosition = ends.targetPosition,
+        )
+        val base = edgeColor(edge.type)
+        // A hovered edge reads brighter and thicker, so a click on it feels aimable.
+        val color = if (hover) lerp(base, Color.White, 0.45f) else base
+        val width = (if (edge.type == RelationType.BLOCKS) 2f else 1f) + if (hover) 2f else 0f
         drawPath(
-            path = edgeCurve(a, b),
+            path = smoothStepPath(points),
             color = color,
             style = Stroke(
                 width = width,
-                pathEffect = dashes?.let { PathEffect.dashPathEffect(it, 0f) },
+                pathEffect = edgeDashes(edge.type)?.let { PathEffect.dashPathEffect(it, 0f) },
             ),
         )
         when (edge.type) {
-            RelationType.BLOCKS -> drawPath(arrowHead(b, 9f), color)
-            RelationType.DUPLICATE -> drawPath(arrowHead(b, 6f), color)
+            RelationType.BLOCKS -> drawPath(arrowHead(ends.target, ends.targetPosition, 9f), color)
+            RelationType.DUPLICATE -> drawPath(arrowHead(ends.target, ends.targetPosition, 6f), color)
             RelationType.RELATED -> Unit
         }
     }
 }
 
-private fun DrawScope.drawLinkDrag(from: Rect?, at: Offset) {
+/** The line a relation drag or a pick draws: the eventual edge, ghosted, on the same route. */
+private fun DrawScope.drawGhostLink(from: Rect?, at: Offset, type: RelationType, zoom: Float) {
     if (from == null) return
-    drawLine(
-        color = Swim.Red,
-        start = Offset(from.center.x, from.bottom),
-        end = at,
-        strokeWidth = 2f,
-        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f), 0f),
+    val blocks = type == RelationType.BLOCKS
+    val start = if (blocks) {
+        Offset(from.center.x, from.bottom)
+    } else {
+        Offset(if (at.x >= from.center.x) from.right else from.left, from.center.y)
+    }
+    val points = smoothStepPoints(
+        source = start,
+        sourcePosition = if (blocks) EdgePosition.BOTTOM else {
+            if (at.x >= from.center.x) EdgePosition.RIGHT else EdgePosition.LEFT
+        },
+        target = at,
+        targetPosition = if (blocks) EdgePosition.TOP else {
+            if (at.x >= from.center.x) EdgePosition.LEFT else EdgePosition.RIGHT
+        },
     )
+    val unit = 1f / max(0.01f, zoom)
+    drawPath(
+        path = smoothStepPath(points),
+        color = edgeColor(type).copy(alpha = 0.75f),
+        style = Stroke(
+            width = (if (blocks) 2f else 1.5f) * unit,
+            pathEffect = PathEffect.dashPathEffect(
+                (edgeDashes(type) ?: floatArrayOf(6f, 4f)).map { it * unit }.toFloatArray(),
+                0f,
+            ),
+        ),
+    )
+}
+
+/**
+ * The ring on the card a pending relation starts from.
+ *
+ * ponytail: a static double ring, not the pulse the brief names. `animation-core` is not a
+ * declared dependency of `:shared`, and the offscreen renderer holds every animation at frame
+ * zero anyway, so a pulse would be invisible in the one place it has to be reviewed.
+ */
+private fun DrawScope.drawPickRing(source: Rect?, zoom: Float) {
+    if (source == null) return
+    val unit = 1f / max(0.01f, zoom)
+    listOf(9f to 0.4f, 3f to 1f).forEach { (offset, alpha) ->
+        val grow = offset * unit
+        drawRoundRect(
+            color = Swim.Focus.copy(alpha = alpha),
+            topLeft = Offset(source.left - grow, source.top - grow),
+            size = Size(source.width + grow * 2f, source.height + grow * 2f),
+            cornerRadius = CornerRadius(8f + grow),
+            style = Stroke(2.5f * unit),
+        )
+    }
 }
 
 @Composable
@@ -566,11 +741,12 @@ private fun RelationChooser(
     callbacks: GraphCanvasCallbacks,
 ) {
     val width = 132f
-    val height = if (panel is CanvasPanel.Edit) 132f else 116f
+    val current = (panel as? CanvasPanel.Edit)?.edge
+    val rows = changeOptions(current).size + if (current == null) 0 else 1
+    val height = CHOOSER_ROW.value * rows + 8f
     val density = LocalDensity.current.density
     val x = panel.at.x.coerceIn(0f, max(0f, state.viewport.width - width * density))
     val y = panel.at.y.coerceIn(0f, max(0f, state.viewport.height - height * density))
-    val current = (panel as? CanvasPanel.Edit)?.edge
 
     Column(
         modifier = Modifier
@@ -580,10 +756,7 @@ private fun RelationChooser(
             .border(1.dp, Swim.Border, RoundedCornerShape(6.dp))
             .padding(vertical = 4.dp),
     ) {
-        val options = RELATION_INTENTS.filterNot { intent ->
-            current != null && intent.type == current.type && !intent.reversed
-        }
-        options.forEach { intent ->
+        changeOptions(current).forEach { intent ->
             ChooserRow(intent.label, Swim.Text) {
                 state.dismissPanels()
                 if (current == null) {
@@ -610,16 +783,21 @@ private fun RelationChooser(
 
 @Composable
 private fun ChooserRow(label: String, color: Color, onClick: () -> Unit) {
-    Text(
-        text = label,
-        color = color,
-        fontSize = 11.sp,
+    Box(
+        contentAlignment = Alignment.CenterStart,
         modifier = Modifier
             .fillMaxWidth()
+            .height(CHOOSER_ROW)
+            .pointerHoverIcon(PointerIcon.Hand)
             .pointerInput(label) { detectTapGestures(onTap = { onClick() }) }
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-    )
+            .padding(horizontal = 8.dp),
+    ) {
+        Text(text = label, color = color, fontSize = 11.sp)
+    }
 }
+
+/** Fixed so the panel height is known, and so it matches a context-menu row. */
+internal val CHOOSER_ROW = 22.dp
 
 @Composable
 private fun Minimap(
@@ -636,6 +814,7 @@ private fun Minimap(
             .background(Swim.Card.copy(alpha = 0.9f), RoundedCornerShape(4.dp))
             .border(1.dp, Swim.Border, RoundedCornerShape(4.dp))
             .clip(RoundedCornerShape(4.dp))
+            .pointerHoverIcon(PointerIcon.Hand)
             .pointerInput(bounds) {
                 fun centreOn(at: Offset) {
                     val (fit, origin) = minimapFit(bounds, size.width.toFloat(), size.height.toFloat())

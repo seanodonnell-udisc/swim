@@ -65,6 +65,9 @@ import swim.ui.graph.Swim
 import swim.ui.graph.rememberGraphCanvasState
 import swim.ui.theme.SwimDimens
 
+/** Set once the shortcuts overlay has been shown, so it only greets a new install. */
+private const val SEEN_SHORTCUTS = "swim.seenShortcuts"
+
 /** One mutation waiting for the user to confirm it. */
 private class Pending(
     val detail: String,
@@ -129,6 +132,14 @@ internal fun GraphScreen(
             keepProject = filterState.urlSource != null,
         )
         if (reconciled != filterState.filters) holder.filters.setFilters(reconciled)
+    }
+
+    // The gestures the canvas offers are not written anywhere else, so the first run says so.
+    LaunchedEffect(Unit) {
+        if (!env.settings.getBoolean(SEEN_SHORTCUTS, false)) {
+            canvasState.shortcutsVisible = true
+            env.settings.putBoolean(SEEN_SHORTCUTS, true)
+        }
     }
 
     LaunchedEffect(env) {
@@ -370,6 +381,11 @@ internal fun GraphScreen(
                                 .let { it.copy(groups = groupBoxesOf(projected, filterState.groupBy, it.positions)) }
                         },
                         onSelectionChange = { selection = it },
+                        onRelayout = {
+                            forgetLayout(holder)
+                            relayouts++
+                        },
+                        onReload = { holder.session.reload() },
                     ),
                     underlay = { GroupUnderlay(placement.groups) },
                 )

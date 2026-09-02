@@ -53,44 +53,35 @@ class GraphCanvasLogicTest {
     fun blocksEdgesLeaveTheBottomAndLandOnTheTop() {
         val from = nodeRect(Position(0f, 0f))
         val to = nodeRect(Position(0f, 300f))
-        val (a, b) = anchorsFor(RelationType.BLOCKS, from, to)
-        assertEquals(from.bottom, a.point.y)
-        assertEquals(from.center.x, a.point.x)
-        assertEquals(to.top, b.point.y)
-        assertEquals(to.center.x, b.point.x)
+        val ends = edgeEnds(RelationType.BLOCKS, from, to)
+        assertEquals(Offset(from.center.x, from.bottom), ends.source)
+        assertEquals(EdgePosition.BOTTOM, ends.sourcePosition)
+        assertEquals(Offset(to.center.x, to.top), ends.target)
+        assertEquals(EdgePosition.TOP, ends.targetPosition)
     }
 
     @Test
     fun sideEdgesTakeTheClosestPairOfSides() {
         val left = nodeRect(Position(0f, 0f))
         val right = nodeRect(Position(400f, 0f))
-        val (a, b) = anchorsFor(RelationType.RELATED, left, right)
-        assertEquals(left.right, a.point.x)
-        assertEquals(right.left, b.point.x)
+        val out = edgeEnds(RelationType.RELATED, left, right)
+        assertEquals(left.right, out.source.x)
+        assertEquals(EdgePosition.RIGHT, out.sourcePosition)
+        assertEquals(right.left, out.target.x)
+        assertEquals(EdgePosition.LEFT, out.targetPosition)
 
-        val (c, d) = anchorsFor(RelationType.RELATED, right, left)
-        assertEquals(right.left, c.point.x)
-        assertEquals(left.right, d.point.x)
+        val back = edgeEnds(RelationType.RELATED, right, left)
+        assertEquals(right.left, back.source.x)
+        assertEquals(left.right, back.target.x)
     }
 
     @Test
     fun stackedCardsPairTheSameSide() {
         val top = nodeRect(Position(0f, 0f))
         val below = nodeRect(Position(0f, 400f))
-        val (a, b) = anchorsFor(RelationType.DUPLICATE, top, below)
-        assertEquals(a.point.x, b.point.x)
-    }
-
-    @Test
-    fun curveSamplesStartAndEndOnTheAnchors() {
-        val from = nodeRect(Position(10f, 10f))
-        val to = nodeRect(Position(500f, 400f))
-        val (a, b) = anchorsFor(RelationType.BLOCKS, from, to)
-        val samples = edgeSamples(a, b)
-        assertEquals(a.point, samples.first())
-        assertEquals(b.point, samples.last())
-        assertTrue(distanceToPolyline(samples, a.point) < 0.01f)
-        assertTrue(distanceToPolyline(samples, Offset(-500f, -500f)) > 100f)
+        val ends = edgeEnds(RelationType.DUPLICATE, top, below)
+        assertEquals(ends.source.x, ends.target.x)
+        assertEquals(ends.sourcePosition, ends.targetPosition)
     }
 
     @Test
@@ -180,10 +171,12 @@ class GraphCanvasLogicTest {
         val rects = GraphCanvasPreview.positions.mapValues { (_, position) -> nodeRect(position) }
         val from = rects.getValue("ENG-101")
         val to = rects.getValue("ENG-103")
-        val midpoint = Offset(from.center.x, (from.bottom + to.top) / 2f)
+        // Below the split, where the trunk that ENG-101 shares with its other blocks edge has
+        // already turned away. The shared part above the split belongs to both edges.
+        val onlyThisEdge = Offset(from.center.x, to.top - 10f)
         assertEquals(
             EdgeKey("ENG-101", "ENG-103", RelationType.BLOCKS),
-            hitEdge(GraphCanvasPreview.graph, rects, midpoint, tolerance = 8f),
+            hitEdge(GraphCanvasPreview.graph, rects, onlyThisEdge, tolerance = 8f),
         )
         assertNull(hitEdge(GraphCanvasPreview.graph, rects, Offset(-400f, -400f), 8f))
     }
@@ -214,39 +207,6 @@ class GraphCanvasLogicTest {
         assertEquals(1f, canvas.scale, absoluteTolerance = 0.001f)
         assertEquals(48f, canvas.toScreen(Offset(100f, 50f)).x, absoluteTolerance = 0.01f)
         assertEquals(48f, canvas.toScreen(Offset(100f, 50f)).y, absoluteTolerance = 0.01f)
-    }
-
-    @Test
-    fun aDetourLeavesBothCardsOnTheOutwardSideAndBowsPastThem() {
-        val from = Rect(0f, 400f, 270f, 520f)
-        val to = Rect(0f, 0f, 270f, 120f)
-        // Both cards sit left of the graph centre, so the bow goes left.
-        val (a, b) = routeFor(RelationType.BLOCKS, from, to, detour = true, centerX = 800f)
-        assertEquals(Offset(0f, 460f), a.point)
-        assertEquals(Offset(0f, 60f), b.point)
-        assertEquals(-60f, a.control?.x)
-        assertEquals(-60f, b.control?.x)
-        // The curve clears the cards it used to cross.
-        assertTrue(edgeSamples(a, b).all { it.x <= 0.01f }, "the bow re-entered the column")
-    }
-
-    @Test
-    fun aDetourBowsRightWhenTheEdgeSitsRightOfTheCentre() {
-        val from = Rect(1000f, 400f, 1270f, 520f)
-        val to = Rect(1000f, 0f, 1270f, 120f)
-        val (a, _) = routeFor(RelationType.BLOCKS, from, to, detour = true, centerX = 500f)
-        assertEquals(1270f, a.point.x)
-        assertEquals(1330f, a.control?.x)
-    }
-
-    @Test
-    fun routeForWithoutADetourIsTheOrdinaryAnchoring() {
-        val from = Rect(0f, 0f, 270f, 120f)
-        val to = Rect(0f, 300f, 270f, 420f)
-        assertEquals(
-            anchorsFor(RelationType.BLOCKS, from, to),
-            routeFor(RelationType.BLOCKS, from, to, detour = false, centerX = 135f),
-        )
     }
 
     @Test
