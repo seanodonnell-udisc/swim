@@ -11,18 +11,21 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -30,9 +33,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -42,8 +52,10 @@ import swim.core.github.parsePrUrl
 import swim.core.model.EdgeProvenance
 import swim.core.model.GraphData
 import swim.core.model.IssueNode
+import swim.core.model.PRIORITY_LABELS
 import swim.core.model.PrStatus
 import swim.core.model.RelationType
+import swim.core.model.StateSummary
 import swim.core.model.UserSummary
 import kotlin.math.max
 import kotlin.math.min
@@ -132,17 +144,21 @@ internal fun edgeLabel(key: EdgeKey, self: String): String = when {
     else -> "duplicated by ${key.from}"
 }
 
+/** The estimates the Points submenu offers. Anything else is set in Linear. */
+internal val POINT_VALUES = listOf(1, 2, 3, 5, 8)
+
 /** Everything one context menu offers, built from what the canvas already holds. */
 internal fun menuEntries(
     menu: CanvasMenu,
     graph: GraphData,
     nodes: Map<String, IssueNode>,
     users: List<UserSummary>,
+    states: Map<String, List<StateSummary>>,
     ids: List<String>,
     state: GraphCanvasState,
     callbacks: GraphCanvasCallbacks,
 ): List<MenuEntry> = when (menu) {
-    is CanvasMenu.Node -> nodeEntries(menu.id, graph, nodes, users, state, callbacks)
+    is CanvasMenu.Node -> nodeEntries(menu.id, menu.at, graph, nodes, users, states, state, callbacks)
     is CanvasMenu.Edge -> edgeEntries(menu.edge, callbacks)
     is CanvasMenu.Empty -> listOf(
         MenuEntry("Zoom to Fit", action = { state.fitToContent() }),
@@ -154,13 +170,17 @@ internal fun menuEntries(
 
 private fun nodeEntries(
     id: String,
+    at: Offset,
     graph: GraphData,
     nodes: Map<String, IssueNode>,
     users: List<UserSummary>,
+    states: Map<String, List<StateSummary>>,
     state: GraphCanvasState,
     callbacks: GraphCanvasCallbacks,
 ): List<MenuEntry> {
-    val assignee = nodes[id]?.assigneeId
+    val node = nodes[id]
+    val assignee = node?.assigneeId
+    val prs = node?.pullRequests.orEmpty()
     val relations = graph.edges.filter { it.from == id || it.to == id }.map { edge ->
         val key = edge.key()
         MenuEntry(
@@ -178,8 +198,38 @@ private fun nodeEntries(
             },
         )
     }
+    // Linear holds no deep link to an attachment, so the only pull-request page to offer is
+    // GitHub's own. One PR opens straight from the row; several ask which.
+    val openPr = when {
+        prs.isEmpty() -> MenuEntry("Open GitHub PR", color = Swim.Muted)
+        prs.size == 1 -> MenuEntry("Open GitHub PR") { callbacks.onOpenUrl(prs[0].url) }
+        else -> MenuEntry(
+            label = "Open GitHub PR",
+            submenu = prs.map { pr ->
+                MenuEntry(prChip(pr.url, pr.title, null).label) { callbacks.onOpenUrl(pr.url) }
+            },
+        )
+    }
+    val pullRequest = when {
+        prs.isEmpty() -> MenuEntry("Pull request…", color = Swim.Muted)
+        else -> MenuEntry(
+            label = "Pull request…",
+            submenu = if (prs.size == 1) emptyList() else prs.map { pr ->
+                MenuEntry(prChip(pr.url, pr.title, null).label) {
+                    state.prPanel = PrPanel(pr.url, pr.title, at)
+                }
+            },
+            action = if (prs.size == 1) {
+                { state.prPanel = PrPanel(prs[0].url, prs[0].title, at) }
+            } else {
+                null
+            },
+        )
+    }
     return listOf(
-        MenuEntry("Open in Linear") { callbacks.onOpenIssue(id) },
+        MenuEntry("Open issue in Linear") { callbacks.onOpenIssue(id) },
+        openPr,
+        pullRequest,
         MenuEntry("Copy ID") { callbacks.onCopyId(id) },
         MenuEntry(
             label = "Assign to",
@@ -191,6 +241,31 @@ private fun nodeEntries(
                 }
             },
         ),
+        MenuEntry(
+            label = "Status",
+            submenu = states[node?.team].orEmpty().map { workflow ->
+                MenuEntry(workflow.name, checked = workflow.name == node?.state) {
+                    callbacks.onSetState(id, workflow.id, workflow.name)
+                }
+            }.ifEmpty { listOf(MenuEntry("No states loaded", color = Swim.Muted)) },
+        ),
+        MenuEntry(
+            label = "Priority",
+            submenu = PRIORITY_LABELS.entries.sortedBy { it.key }.map { (value, label) ->
+                MenuEntry(label, checked = value == node?.priority) {
+                    callbacks.onSetPriority(id, value)
+                }
+            },
+        ),
+        MenuEntry(
+            label = "Points",
+            submenu = POINT_VALUES.map { points ->
+                MenuEntry("$points", checked = points == node?.estimate) {
+                    callbacks.onSetEstimate(id, points)
+                }
+            } + MenuEntry("Clear", color = Swim.Red) { callbacks.onSetEstimate(id, null) },
+        ),
+        MenuEntry("Link a PR by URL…") { state.prUrlFor = id },
         MenuEntry(
             label = "Add relation",
             submenu = RELATION_INTENTS.map { intent ->
@@ -205,6 +280,7 @@ private fun nodeEntries(
                 listOf(MenuEntry("No relations", color = Swim.Muted))
             },
         ),
+        MenuEntry("Remove from project", color = Swim.Red) { callbacks.onRemoveFromProject(id) },
     )
 }
 
@@ -254,6 +330,158 @@ internal fun DerivedEdgePanel(
                 color = if (index == 0) Swim.Text else Swim.Amber,
                 fontSize = 11.sp,
                 lineHeight = 14.sp,
+            )
+        }
+    }
+}
+
+private val PR_PANEL_WIDTH = 300.dp
+
+/**
+ * Everything one pull request says, in place of the tooltip the chip used to flash. It stays up
+ * until something dismisses it, so the branch names and the review state can actually be read.
+ */
+@Composable
+internal fun PrInfoPanel(
+    panel: PrPanel,
+    status: PrStatus?,
+    viewport: Size,
+    density: Float,
+    onOpen: () -> Unit,
+) {
+    val number = parsePrUrl(panel.url)?.number
+    val x = panel.at.x.coerceIn(0f, max(0f, viewport.width - PR_PANEL_WIDTH.value * density))
+    val y = panel.at.y.coerceIn(0f, max(0f, viewport.height - 132f * density))
+    Column(
+        modifier = Modifier
+            .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
+            .width(PR_PANEL_WIDTH)
+            .background(Swim.Card, RoundedCornerShape(6.dp))
+            .border(1.dp, Swim.Border, RoundedCornerShape(6.dp))
+            // A click inside the panel must not reach the canvas and clear the selection.
+            .pointerInput(Unit) { detectTapGestures { } }
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Text(
+            text = if (number == null) "Pull request" else "Pull request #$number",
+            color = Swim.Accent,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+        )
+        Text(panel.title, color = Swim.Text, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 3)
+        val head = status?.headRefName
+        val base = status?.baseRefName
+        if (head != null && base != null) {
+            Text("$head → $base", color = Swim.TextMuted, fontSize = 10.sp, maxLines = 2)
+        }
+        Text(
+            text = prStateLine(status),
+            color = Swim.TextMuted,
+            fontSize = 10.sp,
+            maxLines = 2,
+        )
+        Text(
+            text = "Open on GitHub",
+            color = Swim.Accent,
+            fontSize = 11.sp,
+            modifier = Modifier
+                .pointerHoverIcon(PointerIcon.Hand)
+                .pointerInput(panel.url) { detectTapGestures { onOpen() } }
+                .padding(top = 2.dp),
+        )
+    }
+}
+
+/** The review and check state in one line, or a note that GitHub has not answered. */
+internal fun prStateLine(status: PrStatus?): String {
+    if (status == null) return "No status from GitHub yet."
+    val review = when (status.reviewDecision?.uppercase()) {
+        "APPROVED" -> "Approved"
+        "CHANGES_REQUESTED" -> "Changes requested"
+        "REVIEW_REQUIRED" -> "Review required"
+        else -> "No review"
+    }
+    val checks = when (status.checkState?.uppercase()) {
+        "SUCCESS" -> "checks passed"
+        "FAILURE", "ERROR" -> "checks failed"
+        "PENDING", "EXPECTED" -> "checks running"
+        else -> "no checks"
+    }
+    return "$review · $checks"
+}
+
+/** The small input behind "Link a PR by URL". Enter submits, Esc closes. */
+@Composable
+internal fun PrUrlDialog(
+    identifier: String,
+    onDismiss: () -> Unit,
+    onSubmit: (String) -> Unit,
+) {
+    var url by remember(identifier) { mutableStateOf("") }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Swim.Bg.copy(alpha = 0.7f))
+            .pointerInput(Unit) { detectTapGestures { onDismiss() } },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .width(360.dp)
+                .background(Swim.Card, RoundedCornerShape(8.dp))
+                .border(1.dp, Swim.Border, RoundedCornerShape(8.dp))
+                .pointerInput(Unit) { detectTapGestures { } }
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "Link a pull request to $identifier",
+                color = Swim.Text,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+            )
+            BasicTextField(
+                value = url,
+                onValueChange = { url = it },
+                singleLine = true,
+                textStyle = TextStyle(color = Swim.Text, fontSize = 11.sp),
+                cursorBrush = SolidColor(Swim.Accent),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Swim.Bg, RoundedCornerShape(4.dp))
+                    .border(1.dp, Swim.Border, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .onPreviewKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                        when (event.key) {
+                            Key.Enter, Key.NumPadEnter -> {
+                                if (url.isNotBlank()) onSubmit(url.trim())
+                                true
+                            }
+                            Key.Escape -> {
+                                onDismiss()
+                                true
+                            }
+                            else -> false
+                        }
+                    },
+                decorationBox = { inner ->
+                    if (url.isEmpty()) {
+                        Text(
+                            "https://github.com/owner/repo/pull/123",
+                            color = Swim.Muted,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                        )
+                    }
+                    inner()
+                },
+            )
+            Text(
+                text = "Enter to link · Esc to cancel",
+                color = Swim.Muted,
+                fontSize = 10.sp,
             )
         }
     }

@@ -32,6 +32,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -57,7 +58,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import swim.core.auth.LinearAuthMode
 import swim.core.model.IssueEdge
+import swim.core.model.PRIORITY_LABELS
 import swim.core.model.RelationType
+import swim.core.model.StateSummary
 import swim.core.model.SwimError
 import swim.core.session.AuthStatus
 import swim.core.session.GraphGrouping
@@ -66,8 +69,11 @@ import swim.core.session.PR_STATUS_TTL
 import swim.core.session.RelationChange
 import swim.core.session.reconcile
 import swim.core.url.resolveLinearUrl
+import swim.layout.LayoutEdge
+import swim.layout.LayoutEdgeKind
 import swim.layout.Position
 import swim.layout.PositionSnapshot
+import swim.layout.relayoutDescendants
 import swim.ui.auth.GithubCard
 import swim.ui.filters.FilterToolbar
 import swim.ui.filters.LinearUrlInput
@@ -79,6 +85,8 @@ import swim.ui.graph.GraphCanvas
 import swim.ui.graph.GraphCanvasCallbacks
 import swim.ui.graph.GraphCanvasDefaults
 import swim.ui.graph.Swim
+import swim.ui.graph.layoutEdgesOf
+import swim.ui.graph.layoutNodesOf
 import swim.ui.graph.rememberGraphCanvasState
 import swim.ui.graph.slotOf
 import swim.ui.graph.stackIndex
@@ -93,7 +101,44 @@ private class Pending(
     val detail: String,
     val confirmLabel: String,
     val run: suspend () -> Unit,
+    /** Runs once the mutation has gone through, before the graph reloads into view. */
+    val after: () -> Unit = {},
 )
+
+/** How long the tuck-under slide takes. Long enough to follow, short enough not to wait on. */
+private const val TUCK_MS = 200f
+
+/**
+ * Slides every moved card from where it is to where it belongs, then hands over the final map.
+ *
+ * ponytail: driven off `withFrameMillis`, not an `Animatable`. `animation-core` is not a declared
+ * dependency of `:shared`, and a straight lerp over 200ms is the whole requirement.
+ */
+private suspend fun slideTo(
+    from: Map<String, Position>,
+    to: Map<String, Position>,
+    onFrame: (Map<String, Position>) -> Unit,
+) {
+    val moved = to.filter { (id, at) -> from[id] != at }
+    if (moved.isEmpty()) {
+        onFrame(to)
+        return
+    }
+    val start = withFrameMillis { it }
+    while (true) {
+        val fraction = ((withFrameMillis { it } - start) / TUCK_MS).coerceAtMost(1f)
+        onFrame(
+            to + moved.mapValues { (id, end) ->
+                val begin = from[id] ?: end
+                Position(
+                    begin.x + (end.x - begin.x) * fraction,
+                    begin.y + (end.y - begin.y) * fraction,
+                )
+            },
+        )
+        if (fraction >= 1f) return
+    }
+}
 
 /** The graph, its filter bar, and the confirm step in front of every Linear mutation. */
 @Composable
@@ -115,6 +160,8 @@ internal fun GraphScreen(
     val derivePr by holder.session.derivePrRelations.collectAsState()
 
     var reference by remember { mutableStateOf(ReferenceData()) }
+    var states by remember { mutableStateOf(emptyMap<String, List<StateSummary>>()) }
+    var tuck by remember { mutableStateOf<Map<String, Position>?>(null) }
     var placement by remember { mutableStateOf(GraphPlacement()) }
     var selection by remember { mutableStateOf(emptySet<String>()) }
     var pending by remember { mutableStateOf<Pending?>(null) }
@@ -150,6 +197,18 @@ internal fun GraphScreen(
         } catch (e: SwimError) {
             banner = e.message
         }
+    }
+
+    // The Status submenu needs each team's own workflow states, so they are fetched per team the
+    // graph actually shows. The client caches them, so a reload of the same teams costs nothing.
+    LaunchedEffect(projected, reference.teams) {
+        val wanted = projected.nodes.mapTo(mutableSetOf()) { it.team } - states.keys
+        if (wanted.isEmpty() || reference.teams.isEmpty()) return@LaunchedEffect
+        val fetched = wanted.mapNotNull { key ->
+            val team = reference.teams.firstOrNull { it.key == key } ?: return@mapNotNull null
+            runCatching { key to holder.client.getStates(team.id) }.getOrNull()
+        }
+        if (fetched.isNotEmpty()) states = states + fetched
     }
 
     // Drop the selections the other filters made impossible, once the lists have arrived.
@@ -230,6 +289,18 @@ internal fun GraphScreen(
         }
     }
 
+    // The tuck-under slide. It runs against the positions on screen and saves what it lands on,
+    // because a relation the user drew is their arrangement, not one the next pass may re-derive.
+    LaunchedEffect(tuck) {
+        val settled = tuck ?: return@LaunchedEffect
+        slideTo(placement.positions, settled) { frame ->
+            placement = placement.copy(positions = frame)
+                .let { it.copy(groups = groupBoxesOf(projected, filterState.groupBy, frame)) }
+        }
+        holder.session.savePositions(settled)
+        tuck = null
+    }
+
     // A reload of the same query keeps the viewport. A different query gets a fresh fit.
     var fittedIds by remember { mutableStateOf(emptySet<String>()) }
     LaunchedEffect(placement) {
@@ -275,8 +346,34 @@ internal fun GraphScreen(
         it.from == key.from && it.to == key.to && it.type == key.type
     }
 
-    fun mutate(detail: String, confirmLabel: String, run: suspend () -> Unit) {
-        pending = Pending(detail, confirmLabel, run)
+    fun mutate(
+        detail: String,
+        confirmLabel: String,
+        after: () -> Unit = {},
+        run: suspend () -> Unit,
+    ) {
+        pending = Pending(detail, confirmLabel, run, after)
+    }
+
+    /**
+     * The arrange answer to a new "A blocks B": B and everything it blocks tuck in under A,
+     * against the positions on screen, and nothing else moves. The result is the user's own
+     * arrangement, so it is saved like a drop rather than left for the next placement pass to
+     * re-derive.
+     */
+    fun tuckUnder(blocker: String, blocked: String) {
+        val index = stackIndex(visibleStacks(projected))
+        val from = slotOf(blocker, index)
+        val to = slotOf(blocked, index)
+        if (from == to) return
+        val settled = relayoutDescendants(
+            current = placement.positions,
+            nodes = layoutNodesOf(projected),
+            edges = layoutEdgesOf(projected),
+            newEdge = LayoutEdge(from, to, LayoutEdgeKind.BLOCKS),
+        )
+        if (settled == placement.positions) return
+        tuck = settled
     }
 
     Column(Modifier.fillMaxSize().background(Swim.Bg)) {
@@ -381,6 +478,7 @@ internal fun GraphScreen(
                     readySet = readySet,
                     prStatuses = prStatuses,
                     users = reference.users,
+                    states = states,
                     crossLinks = placement.crossLinks,
                     cycleEdges = placement.cycleEdges,
                     selection = selection,
@@ -398,7 +496,17 @@ internal fun GraphScreen(
                             }
                         },
                         onCreateRelation = { from, to, type, reversed ->
-                            mutate(relationDetail(from, to, type, reversed), "Create") {
+                            mutate(
+                                detail = relationDetail(from, to, type, reversed),
+                                confirmLabel = "Create",
+                                // Only a blocks relation implies a place on the board. A reversed
+                                // one reads "from is blocked by to", so `to` is the blocker.
+                                after = {
+                                    if (type == RelationType.BLOCKS) {
+                                        if (reversed) tuckUnder(to, from) else tuckUnder(from, to)
+                                    }
+                                },
+                            ) {
                                 if (reversed && type == RelationType.BLOCKS) {
                                     holder.session.createBlockedBy(from, to)
                                 } else {
@@ -437,6 +545,36 @@ internal fun GraphScreen(
                                 .let { it.copy(groups = groupBoxesOf(projected, filterState.groupBy, placed)) }
                         },
                         onSelectionChange = { selection = it },
+                        onSetState = { id, stateId, stateName ->
+                            mutate("This moves $id to $stateName in Linear.", "Change") {
+                                holder.session.setState(id, stateId)
+                            }
+                        },
+                        onSetPriority = { id, priority ->
+                            val label = PRIORITY_LABELS[priority] ?: "no priority"
+                            mutate("This sets $id to $label in Linear.", "Change") {
+                                holder.session.setPriority(id, priority)
+                            }
+                        },
+                        onSetEstimate = { id, estimate ->
+                            val detail = if (estimate == null) {
+                                "This clears the estimate on $id in Linear."
+                            } else {
+                                "This sets the estimate on $id to $estimate in Linear."
+                            }
+                            mutate(detail, "Change") { holder.session.setEstimate(id, estimate) }
+                        },
+                        onAttachPr = { id, url ->
+                            mutate("This links $url to $id in Linear.", "Link") {
+                                holder.session.attachPr(id, url)
+                            }
+                        },
+                        onRemoveFromProject = { id ->
+                            mutate("This removes $id from its project in Linear.", "Remove") {
+                                holder.session.removeFromProject(id)
+                            }
+                        },
+                        onRefused = env.beep,
                         onRelayout = {
                             relayouts++
                         },
@@ -486,6 +624,7 @@ internal fun GraphScreen(
                 scope.launch {
                     try {
                         request.run()
+                        request.after()
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: SwimError) {

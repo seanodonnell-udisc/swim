@@ -13,10 +13,13 @@ import swim.layout.LayoutEdge
 import swim.layout.LayoutEdgeKind
 import swim.layout.Position
 import swim.layout.PositionSnapshot
+import swim.layout.relayoutDescendants
 import swim.ui.graph.GraphCanvasDefaults
 import swim.ui.graph.STACK_OFFSET
 import swim.ui.graph.STACK_PREFIX
 import swim.ui.graph.blocksEdgeKey
+import swim.ui.graph.layoutEdgesOf
+import swim.ui.graph.layoutNodesOf
 import swim.ui.graph.stackKeyOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -389,6 +392,44 @@ class PlacementTest {
         assertEquals(100f - GROUP_MARGIN, box.x)
         assertEquals(200f - GROUP_LABEL_BAND, box.y)
         assertEquals(GraphCanvasDefaults.NodeWidth + GROUP_MARGIN * 2f, box.width)
+    }
+
+    /**
+     * The arrange tuck-under, wired the way `GraphScreen` wires it: the slots and edges the canvas
+     * uses, fed to the layout's own rearrange. A new "A blocks B" puts B and everything under it
+     * below A, against the positions on screen, and moves nothing else.
+     */
+    @Test
+    fun aNewBlocksRelationTucksTheBlockedSubtreeUnderTheBlocker() {
+        val graph = GraphData(
+            nodes = listOf(node("A"), node("B"), node("C"), node("D")),
+            edges = listOf(blocks("B", "C")),
+        )
+        // B and C sit above and to the left of A, which is where the user left them.
+        val current = mapOf(
+            "A" to Position(600f, 400f),
+            "B" to Position(0f, 0f),
+            "C" to Position(0f, 200f),
+            "D" to Position(1200f, 0f),
+        )
+        val settled = relayoutDescendants(
+            current = current,
+            nodes = layoutNodesOf(graph),
+            edges = layoutEdgesOf(graph),
+            newEdge = LayoutEdge("A", "B", LayoutEdgeKind.BLOCKS),
+        )
+
+        assertTrue(
+            settled.getValue("B").y > settled.getValue("A").y,
+            "B did not move below its new blocker: ${settled["B"]}",
+        )
+        assertTrue(
+            settled.getValue("C").y > settled.getValue("B").y,
+            "C did not follow B down: ${settled["C"]}",
+        )
+        assertEquals(current.getValue("A"), settled.getValue("A"), "the blocker moved")
+        assertEquals(current.getValue("D"), settled.getValue("D"), "an unrelated card moved")
+        assertEquals(current.keys, settled.keys, "the map lost or gained a card")
     }
 
     @Test

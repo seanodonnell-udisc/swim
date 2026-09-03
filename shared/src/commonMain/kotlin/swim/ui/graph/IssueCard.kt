@@ -43,8 +43,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import swim.core.model.IssueNode
 import swim.core.model.PRIORITY_LABELS
@@ -61,6 +63,8 @@ internal class CardHandlers(
     val onDragStart: () -> Unit,
     val onDrag: (Offset) -> Unit,
     val onDragEnd: () -> Unit,
+    /** Interact will not move a card. The canvas shakes it and beeps instead. */
+    val onDragRefused: () -> Unit,
     val onLinkStart: (LinkSide) -> Unit,
     val onLink: (Offset) -> Unit,
     val onLinkEnd: () -> Unit,
@@ -74,8 +78,12 @@ internal fun IssueCard(
     /** True while a relation drag is running from this card, which keeps its handles alive. */
     linking: Boolean,
     mode: CanvasMode,
-    /** Reports the pointer resting on a handle, so an Interact pan leaves that drag alone. */
+    /** Reports the pointer resting on a handle, so a card drag leaves that gesture alone. */
     onOverHandle: (Boolean) -> Unit,
+    /** Rises every time Interact refuses to move this card, which shakes it once more. */
+    shake: Int,
+    /** A chip was clicked: open the pull-request window on it. */
+    onOpenPr: (url: String, title: String) -> Unit,
     prStatuses: Map<String, PrStatus>,
     users: List<UserSummary>,
     handlers: CardHandlers,
@@ -98,9 +106,11 @@ internal fun IssueCard(
         }
     }
 
+    val shakeBy = shakeOffset(shake)
+
     // The handles live inside the card box, and the box carries the hover, so moving onto a
     // handle cannot take the hover away and make the handle disappear under the pointer.
-    Box(modifier = modifier.hoverable(interaction)) {
+    Box(modifier = modifier.offset { IntOffset(shakeBy.roundToInt(), 0) }.hoverable(interaction)) {
         Column(
             modifier = Modifier
                 .size(GraphCanvasDefaults.NodeWidth.dp, GraphCanvasDefaults.NodeHeight.dp)
@@ -121,7 +131,8 @@ internal fun IssueCard(
                     )
                 }
                 .then(
-                    // Only Arrange moves cards. In Interact the canvas takes the drag and pans.
+                    // Only Arrange moves cards. Interact refuses, once per drag, and says so by
+                    // shaking rather than by silently doing nothing.
                     if (mode == CanvasMode.ARRANGE) {
                         Modifier.pointerInput(node.identifier) {
                             detectDragGestures(
@@ -134,7 +145,12 @@ internal fun IssueCard(
                             }
                         }
                     } else {
-                        Modifier
+                        Modifier.pointerInput(node.identifier) {
+                            detectDragGestures(onDragStart = { live.value.onDragRefused() }) {
+                                    change, _ ->
+                                change.consume()
+                            }
+                        }
                     },
                 )
                 .padding(horizontal = 8.dp, vertical = 6.dp),
@@ -154,13 +170,14 @@ internal fun IssueCard(
                 modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
             )
             Spacer(Modifier.weight(1f))
-            CardFooter(node, category, prStatuses, users, callbacks)
+            CardFooter(node, category, prStatuses, users, onOpenPr, callbacks)
         }
 
-        // Arranging must not create relations by accident, so the handles are an Interact tool.
-        // A drag that leaves the card takes the hover with it, and dropping the handle out of the
-        // composition would cancel the very gesture it started, so it stays while linking.
-        if (mode == CanvasMode.INTERACT && (hovered || linking)) {
+        // Drawing a relation is arranging the graph, so the handles live in Arrange beside the
+        // card drag. A drag that leaves the card takes the hover with it, and dropping the handle
+        // out of the composition would cancel the very gesture it started, so it stays while
+        // linking.
+        if (mode == CanvasMode.ARRANGE && (hovered || linking)) {
             LinkHandle(
                 side = LinkSide.BOTTOM,
                 color = Swim.Red,
@@ -236,6 +253,7 @@ private fun CardFooter(
     category: CardCategory,
     prStatuses: Map<String, PrStatus>,
     users: List<UserSummary>,
+    onOpenPr: (url: String, title: String) -> Unit,
     callbacks: GraphCanvasCallbacks,
 ) {
     Row(
@@ -252,7 +270,7 @@ private fun CardFooter(
             modifier = Modifier.widthIn(max = 66.dp),
         )
         node.pullRequests.orEmpty().take(2).forEach { pr ->
-            PrChipView(prChip(pr.url, pr.title, prStatuses[pr.url]), callbacks)
+            PrChipView(prChip(pr.url, pr.title, prStatuses[pr.url])) { onOpenPr(pr.url, pr.title) }
         }
         Spacer(Modifier.weight(1f))
         AssigneePicker(node, users, callbacks)
@@ -278,30 +296,24 @@ private fun Badge(text: String, color: Color) {
     )
 }
 
+/**
+ * The chip is now a button, not a hover surface: everything the tooltip used to whisper lives in
+ * the pull-request window, which stays open long enough to read and offers the link to GitHub.
+ */
 @Composable
-private fun PrChipView(chip: PrChip, callbacks: GraphCanvasCallbacks) {
-    val interaction = remember { MutableInteractionSource() }
-    val hovered by interaction.collectIsHoveredAsState()
-    Box {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            modifier = Modifier
-                .background(Swim.Border, RoundedCornerShape(3.dp))
-                .padding(horizontal = 3.dp, vertical = 1.dp)
-                .hoverable(interaction)
-                .pointerHoverIcon(PointerIcon.Hand)
-                .pointerInput(chip.url) {
-                    detectTapGestures(onTap = { callbacks.onOpenUrl(chip.url) })
-                },
-        ) {
-            Text(chip.label, color = Swim.Accent, fontSize = 8.sp, maxLines = 1)
-            chip.reviewMark?.let { Text(it, color = chip.reviewColor, fontSize = 8.sp) }
-            chip.checkColor?.let { Box(Modifier.size(5.dp).background(it, CircleShape)) }
-        }
-        if (hovered && chip.tooltip.isNotBlank()) {
-            CardTooltip(chip.tooltip, Modifier.align(Alignment.TopStart))
-        }
+private fun PrChipView(chip: PrChip, onOpenPr: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = Modifier
+            .background(Swim.Border, RoundedCornerShape(3.dp))
+            .padding(horizontal = 3.dp, vertical = 1.dp)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .pointerInput(chip.url) { detectTapGestures(onTap = { onOpenPr() }) },
+    ) {
+        Text(chip.label, color = Swim.Accent, fontSize = 8.sp, maxLines = 1)
+        chip.reviewMark?.let { Text(it, color = chip.reviewColor, fontSize = 8.sp) }
+        chip.checkColor?.let { Box(Modifier.size(5.dp).background(it, CircleShape)) }
     }
 }
 

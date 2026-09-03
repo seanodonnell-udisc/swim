@@ -23,8 +23,12 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
@@ -36,28 +40,91 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlin.math.PI
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /** The idle hint per mode. It names the gestures nothing else on screen advertises. */
 private fun idleHint(mode: CanvasMode): String = when (mode) {
     CanvasMode.ARRANGE ->
-        "Arrange · Drag a card to move it · Drag empty to select · H to pan and link · ? shortcuts"
+        "Arrange · Drag a card to move it · Drag a handle to link · Drag empty to select · " +
+            "Click a card to act · Scroll to pan · ? shortcuts"
     CanvasMode.INTERACT ->
-        "Pan and link · Drag anywhere to pan · Drag a card handle to link · V to arrange · ? shortcuts"
+        "Interact · Click a card for its menu · Click an edge for its panel · " +
+            "Scroll to pan · V to arrange · ? shortcuts"
+}
+
+/**
+ * How long a refusal shakes for, and how far. Short enough that it reads as a rebuff rather than
+ * an animation worth watching.
+ */
+private const val SHAKE_MS = 260f
+private const val SHAKE_REACH = 5f
+
+/**
+ * The offset a shaking thing sits at this frame: a decaying wobble that settles back at zero.
+ * [trigger] rising restarts it, so a second refusal shakes again instead of doing nothing.
+ *
+ * ponytail: driven off `withFrameMillis`, not an `Animatable`. `animation-core` is not a declared
+ * dependency of `:shared` and this is the only animation in it.
+ */
+@Composable
+internal fun shakeOffset(trigger: Int): Float {
+    var offset by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(trigger) {
+        if (trigger == 0) return@LaunchedEffect
+        val start = withFrameMillis { it }
+        while (true) {
+            val elapsed = withFrameMillis { it } - start
+            val fraction = elapsed / SHAKE_MS
+            if (fraction >= 1f) break
+            offset = sin(fraction * PI.toFloat() * 6f) * SHAKE_REACH * (1f - fraction)
+        }
+        offset = 0f
+    }
+    return offset
 }
 
 /** The two-icon segmented control. It is the only thing on screen that names the mode. */
 @Composable
 internal fun ModeToggle(state: GraphCanvasState, modifier: Modifier = Modifier) {
+    // The toggle shakes with the card, so a refused drag points at the control that explains it.
+    val shakeBy = shakeOffset(state.refusals)
+    val refused = shakeBy != 0f
     Row(
         modifier = modifier
+            .offset { IntOffset(shakeBy.roundToInt(), 0) }
             .background(Swim.Card, RoundedCornerShape(6.dp))
-            .border(1.dp, Swim.Border, RoundedCornerShape(6.dp))
+            .border(1.dp, if (refused) Swim.Amber else Swim.Border, RoundedCornerShape(6.dp))
             .padding(2.dp),
     ) {
+        // Both glyphs must be plain text. A hand or a pointer renders as a colour emoji on macOS,
+        // which is the only bright thing in the chrome and reads as a bug.
         ModeButton("↖", "Arrange (V)", CanvasMode.ARRANGE, state)
-        ModeButton("✥", "Pan and link (H)", CanvasMode.INTERACT, state)
+        ModeButton("◉", "Interact (I)", CanvasMode.INTERACT, state)
     }
+}
+
+/** The one-second note that names the mode just switched into. */
+@Composable
+internal fun ModeToast(state: GraphCanvasState, modifier: Modifier = Modifier) {
+    val toast = state.toast ?: return
+    LaunchedEffect(toast.id) {
+        delay(1000)
+        if (state.toast?.id == toast.id) state.toast = null
+    }
+    Text(
+        text = toast.text,
+        color = Swim.Text,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Medium,
+        modifier = modifier
+            .padding(top = 12.dp)
+            .background(Swim.Card, RoundedCornerShape(12.dp))
+            .border(1.dp, Swim.Border, RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 5.dp),
+    )
 }
 
 @Composable
@@ -80,7 +147,7 @@ private fun ModeButton(
             )
             .hoverable(interaction)
             .pointerHoverIcon(PointerIcon.Hand)
-            .pointerInput(mode) { detectTapGestures { state.mode = mode } },
+            .pointerInput(mode) { detectTapGestures { state.switchTo(mode) } },
     ) {
         Text(glyph, color = if (selected) Swim.Text else Swim.TextMuted, fontSize = 14.sp)
         if (hovered && !selected) {
@@ -217,25 +284,25 @@ internal fun PickHint(modifier: Modifier = Modifier) {
 }
 
 private val MODES = listOf(
-    "V, or the ↖ button" to "Arrange: drag cards, drag empty to select",
-    "H, or the ✥ button" to "Pan and link: drag to pan, handles on hover",
+    "V, or the ↖ button" to "Arrange: move cards, draw relations, select",
+    "I, or the ◉ button" to "Interact: act on a card or an edge",
 )
 
 private val GESTURES = listOf(
-    "Left drag, in Arrange" to "Move a card, or draw a selection box",
-    "Left drag, in Pan and link" to "Pan, over a card as well",
-    "Right or middle drag" to "Pan, in either mode",
-    "Space with left drag" to "Pan, in either mode",
-    "Two-finger scroll" to "Pan both axes",
+    "Two-finger scroll" to "Pan both axes, in either mode",
     "⌘ or ctrl with scroll" to "Zoom at the pointer",
+    "Left drag, in Arrange" to "Move a card, or draw a selection box",
+    "Drag a card handle, in Arrange" to "Draw a relation",
+    "Left drag, in Interact" to "Refused: the card shakes and stays put",
+    "Click a card" to "Its menu, switching to Interact first",
+    "Click an edge" to "Its panel, switching to Interact first",
+    "⇧ or ⌘ click" to "Toggle the card in the selection",
     "Double click empty canvas" to "Zoom to fit",
-    "Click, ⇧ or ⌘ click" to "Select, toggle in the selection",
-    "Drag a card handle" to "Draw a relation, in Pan and link",
     "Right click" to "Menu for the card, the edge, or the canvas",
 )
 
 private val KEYS = listOf(
-    "V / H" to "Arrange, Pan and link",
+    "V / I" to "Arrange, Interact",
     "?" to "This help",
     "Esc" to "Clear the selection, close menus",
     "+ / −" to "Zoom in, zoom out",

@@ -1,6 +1,10 @@
 package swim.ui.graph
 
 import swim.core.model.GraphData
+import swim.core.model.RelationType
+import swim.layout.LayoutEdge
+import swim.layout.LayoutEdgeKind
+import swim.layout.LayoutNode
 import swim.layout.Position
 
 /**
@@ -71,6 +75,51 @@ fun cardPosition(
     val order = pileOrder(members, front[stackKeyOf(members)])
     val step = pileOffset(order.indexOf(id), members.size)
     return Position(origin.x + step, origin.y + step)
+}
+
+/**
+ * Cards are a fixed size, so every node is the same box. A pile of stacked cards is one box
+ * instead of one per member: it takes a single slot, grown by the diagonal offset it draws with.
+ */
+fun layoutNodesOf(graph: GraphData): List<LayoutNode> {
+    val index = stackIndex(visibleStacks(graph))
+    val taken = mutableSetOf<String>()
+    return graph.nodes.mapNotNull { node ->
+        val slot = slotOf(node.identifier, index)
+        if (!taken.add(slot)) return@mapNotNull null
+        val spread = index[node.identifier]?.let { stackSpread(it.size) } ?: 0f
+        LayoutNode(
+            slot,
+            GraphCanvasDefaults.NodeWidth + spread,
+            GraphCanvasDefaults.NodeHeight + spread,
+        )
+    }
+}
+
+/**
+ * Only `blocks` shapes the placement; `related` nudges sibling order; `duplicate` says nothing.
+ * Both ends run through the pile they belong to, so an edge onto one member pulls the whole pile.
+ * An edge between two members of one pile has nowhere to go and is dropped.
+ *
+ * The router wants every line that is drawn, duplicates included, so that a dashed purple edge is
+ * kept off the cards as well. [duplicatesAsRelated] is for that caller and for no other: a
+ * duplicate that reached the placement would start nudging sibling order, which it must not.
+ */
+fun layoutEdgesOf(graph: GraphData, duplicatesAsRelated: Boolean = false): List<LayoutEdge> {
+    val index = stackIndex(visibleStacks(graph))
+    val seen = mutableSetOf<LayoutEdge>()
+    return graph.edges.mapNotNull { edge ->
+        val kind = when (edge.type) {
+            RelationType.BLOCKS -> LayoutEdgeKind.BLOCKS
+            RelationType.RELATED -> LayoutEdgeKind.RELATED
+            RelationType.DUPLICATE ->
+                if (duplicatesAsRelated) LayoutEdgeKind.RELATED else return@mapNotNull null
+        }
+        val from = slotOf(edge.from, index)
+        val to = slotOf(edge.to, index)
+        if (from == to) return@mapNotNull null
+        LayoutEdge(from, to, kind).takeIf(seen::add)
+    }
 }
 
 /**

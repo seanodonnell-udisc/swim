@@ -65,6 +65,8 @@ class SwimEnv(
     val commands: AppCommands = AppCommands(),
     val openUrl: (String) -> Unit = {},
     val copyToClipboard: (String) -> Unit = {},
+    /** A short system beep, for a gesture the app refuses. Silent where there is no beeper. */
+    val beep: () -> Unit = {},
     /** Runs the browser sign-in. Null on a platform with no loopback redirect. */
     val linearBrowserSignIn: (suspend () -> LinearTokens)? = null,
     /** Dev hook: `TEAM/Project name`, pre-armed and loaded on launch. See the P3b report. */

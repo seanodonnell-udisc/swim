@@ -7,6 +7,7 @@ import swim.core.model.IssueNode
 import swim.core.model.PrStatus
 import swim.core.model.PullRequestRef
 import swim.core.model.RelationType
+import swim.core.model.StateSummary
 import swim.core.model.UserSummary
 import swim.core.model.WorkflowStateType
 import swim.layout.Position
@@ -157,6 +158,16 @@ object GraphCanvasPreview {
     val cycleEdges: Set<EdgeKey> = setOf(blocksEdgeKey("ENG-110", "ENG-102"))
 
     val readySet: Set<String> = setOf("ENG-101", "ENG-102", "ENG-103")
+
+    /** The one team's workflow states, for the Status submenu. Keyed by team key, as the canvas wants. */
+    val states: Map<String, List<StateSummary>> = mapOf(
+        "ENG" to listOf(
+            StateSummary("s1", "Todo", WorkflowStateType.UNSTARTED, 1.0),
+            StateSummary("s2", "In Progress", WorkflowStateType.STARTED, 2.0),
+            StateSummary("s3", "In Review", WorkflowStateType.STARTED, 3.0),
+            StateSummary("s4", "Done", WorkflowStateType.COMPLETED, 4.0),
+        ),
+    )
 
     val prStatuses: Map<String, PrStatus> = mapOf(
         "https://github.com/swim/swim/pull/412" to PrStatus("APPROVED", "SUCCESS"),

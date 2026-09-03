@@ -62,13 +62,20 @@ class CanvasInteractionTest {
             readySet = GraphCanvasPreview.readySet,
             prStatuses = GraphCanvasPreview.prStatuses,
             users = GraphCanvasPreview.users,
+            states = GraphCanvasPreview.states,
             crossLinks = GraphCanvasPreview.crossLinks,
             cycleEdges = GraphCanvasPreview.cycleEdges,
             selection = selection,
             state = state,
             callbacks = GraphCanvasCallbacks(
                 onOpenIssue = { log += "open:$it" },
+                onOpenUrl = { log += "openUrl:$it" },
                 onCopyId = { log += "copy:$it" },
+                onSetState = { id, stateId, name -> log += "state:$id:$stateId:$name" },
+                onSetPriority = { id, p -> log += "priority:$id:$p" },
+                onSetEstimate = { id, e -> log += "estimate:$id:$e" },
+                onAttachPr = { id, url -> log += "attach:$id:$url" },
+                onRemoveFromProject = { log += "unproject:$it" },
                 onAssign = { id, user -> log += "assign:$id:$user" },
                 onCreateRelation = { from, to, type, reversed ->
                     log += "create:$from:$to:$type:$reversed"
@@ -86,6 +93,7 @@ class CanvasInteractionTest {
                     reported = moved
                     positions = positions + moved
                 },
+                onRefused = { log += "refused" },
                 onRelayout = { log += "relayout" },
                 onReload = { log += "reload" },
             ),
@@ -202,7 +210,7 @@ class CanvasInteractionTest {
     }
 
     @Test
-    fun aRightDragPansAndOpensNoMenu() {
+    fun aRightDragStillOpensTheMenuAndNeverPans() {
         val start = Offset(1150f, 120f)
         val before = state.offset
         move(start)
@@ -224,17 +232,68 @@ class CanvasInteractionTest {
         )
         scene.render()
 
-        assertNull(state.menu, "a right drag opened the context menu")
+        // The right button has one meaning now, so the travel guard that used to hold the menu
+        // back for a pan is gone with the pan.
+        assertTrue(state.menu is CanvasMenu.Empty, "the right drag opened no menu: ${state.menu}")
+        assertEquals(before, state.offset, "a right drag panned the canvas")
+    }
+
+    @Test
+    fun onlyScrollPans() {
+        listOf(CanvasMode.ARRANGE, CanvasMode.INTERACT).forEach { mode ->
+            state.switchTo(mode)
+            scene.render()
+            val before = state.offset
+            scene.sendPointerEvent(
+                eventType = PointerEventType.Scroll,
+                position = Offset(700f, 400f),
+                scrollDelta = Offset(1f, 2f),
+            )
+            scene.render()
+            assertTrue(
+                abs(state.offset.x - before.x) > 20f && abs(state.offset.y - before.y) > 40f,
+                "scroll did not pan in $mode: $before to ${state.offset}",
+            )
+        }
+    }
+
+    /**
+     * The zoom factor used to be `1 - delta * step`, which turns negative past a delta of about
+     * eight — a precise trackpad delta — and slammed the scale into its floor mid-gesture.
+     */
+    @Test
+    fun aFastCmdScrollZoomsSmoothlyAndOpensNothing() {
+        val meta = PointerKeyboardModifiers(isMetaPressed = true)
+        scene.sendPointerEvent(PointerEventType.Move, Offset(700f, 400f), keyboardModifiers = meta)
+        scene.render()
+        val before = state.scale
+        repeat(3) {
+            scene.sendPointerEvent(
+                eventType = PointerEventType.Scroll,
+                position = Offset(700f, 400f),
+                scrollDelta = Offset(0f, 12f),
+                keyboardModifiers = meta,
+            )
+            scene.render()
+        }
+
+        assertTrue(state.scale < before, "a downward cmd+scroll did not zoom out: ${state.scale}")
         assertTrue(
-            abs(state.offset.x - before.x) > 60f && abs(state.offset.y - before.y) > 30f,
-            "the right drag did not pan: ${before} to ${state.offset}",
+            state.scale > GraphCanvasDefaults.MinScale,
+            "a three-notch zoom hit the floor: ${state.scale}",
         )
+        // And nothing was opened on the way. This is the reported leak, pinned.
+        assertNull(state.menu, "cmd+scroll opened a context menu")
+        assertNull(state.panel, "cmd+scroll opened the relation chooser")
+        assertNull(state.prPanel, "cmd+scroll opened the pull-request window")
+        assertNull(state.prUrlFor, "cmd+scroll opened the link-a-PR input")
+        assertTrue(!state.shortcutsVisible, "cmd+scroll opened the shortcuts overlay")
+        assertTrue(log.isEmpty(), "cmd+scroll reported something: $log")
     }
 
     @Test
     fun aHandleDragOntoAnotherCardCreatesARelation() {
-        scene.sendKeyEvent(keyDown(Key.H))
-        scene.render()
+        // Arrange is the default and now owns the handles: drawing a relation is arranging.
         val card = GraphCanvasPreview.positions.getValue("ENG-101")
         val handle = state.toScreen(
             Offset(
@@ -251,13 +310,17 @@ class CanvasInteractionTest {
             button = PointerButton.Primary,
             buttons = PointerButtons(isPrimaryPressed = true),
         )
-        val drop = cardCentre("ENG-103")
+        // ENG-105, off to the right: no edge runs there yet, so the ghost is drawn against empty
+        // canvas instead of hiding along the ENG-101 to ENG-103 line that already exists.
+        val drop = cardCentre("ENG-105")
         listOf(0.25f, 0.6f, 1f).forEach { fraction ->
             scene.sendPointerEvent(
                 PointerEventType.Move, handle + (drop - handle) * fraction,
                 buttons = PointerButtons(isPrimaryPressed = true),
             )
             scene.render()
+            // Mid-flight, with the ghost line drawn between the handle and the pointer.
+            if (fraction == 0.6f) write("canvas-link-ghost.png")
         }
         scene.sendPointerEvent(
             PointerEventType.Release, drop,
@@ -268,41 +331,48 @@ class CanvasInteractionTest {
 
         val panel = state.panel
         assertTrue(
-            panel is CanvasPanel.Create && panel.from == "ENG-101" && panel.to == "ENG-103",
+            panel is CanvasPanel.Create && panel.from == "ENG-101" && panel.to == "ENG-105",
             "the drop did not offer a relation between the two cards: $panel",
         )
         click(Offset(panel.at.x + 20f, panel.at.y + MENU_PADDING + MENU_ROW / 2f))
-        assertEquals(listOf("create:ENG-101:ENG-103:BLOCKS:false"), log)
+        assertEquals(listOf("create:ENG-101:ENG-105:BLOCKS:false"), log)
     }
 
     @Test
-    fun vAndHSwitchTheMode() {
+    fun vAndISwitchTheModeAndEachSwitchToasts() {
         assertEquals(CanvasMode.ARRANGE, state.mode, "a new canvas must start in Arrange")
-        scene.sendKeyEvent(keyDown(Key.H))
+        scene.sendKeyEvent(keyDown(Key.I))
         scene.render()
         assertEquals(CanvasMode.INTERACT, state.mode)
+        assertEquals("Interact", state.toast?.text, "the switch said nothing")
+
         scene.sendKeyEvent(keyDown(Key.V))
         scene.render()
         assertEquals(CanvasMode.ARRANGE, state.mode)
+        assertEquals("Arrange", state.toast?.text)
+        write("canvas-mode-toast.png")
     }
 
     @Test
-    fun arrangeMovesACardAndInteractPansInstead() {
+    fun arrangeMovesACardAndInteractRefusesWithAShake() {
         val card = cardCentre("ENG-101")
         dragBy(card, Offset(60f, 40f))
         assertTrue(log.any { it.startsWith("moved:ENG-101") }, "Arrange did not move the card: $log")
 
         log.clear()
-        scene.sendKeyEvent(keyDown(Key.H))
+        state.switchTo(CanvasMode.INTERACT)
         scene.render()
         val before = state.offset
+        val was = positions.getValue("ENG-102")
         dragBy(cardCentre("ENG-102"), Offset(70f, 50f))
 
-        assertTrue(log.none { it.startsWith("moved") }, "a card moved in Pan and link: $log")
-        assertTrue(
-            abs(state.offset.x - before.x) > 40f && abs(state.offset.y - before.y) > 25f,
-            "the drag over a card did not pan: $before to ${state.offset}",
-        )
+        assertTrue(log.none { it.startsWith("moved") }, "a card moved in Interact: $log")
+        assertEquals(was, positions.getValue("ENG-102"), "the card moved anyway")
+        assertEquals(before, state.offset, "the drag over a card panned instead")
+        // The refusal is visible and audible, not a dead gesture.
+        assertEquals("ENG-102", state.refusedId, "the refused card was not named")
+        assertTrue(state.refusals > 0, "the card did not shake")
+        assertEquals(listOf("refused"), log, "the refusal did not beep: $log")
     }
 
     @Test
@@ -396,17 +466,19 @@ class CanvasInteractionTest {
         )
 
         log.clear()
-        scene.sendKeyEvent(keyDown(Key.H))
+        state.switchTo(CanvasMode.INTERACT)
         scene.render()
         val before = state.offset
         dragBy(empty, Offset(-120f, -80f))
 
-        assertTrue(log.none { it.startsWith("select:[ENG") }, "a marquee ran in Pan and link: $log")
-        assertTrue(abs(state.offset.x - before.x) > 60f, "the empty drag did not pan")
+        assertTrue(log.none { it.startsWith("select:[ENG") }, "a marquee ran in Interact: $log")
+        assertEquals(before, state.offset, "the empty drag panned")
     }
 
     @Test
-    fun theRelationHandlesAreHiddenInArrange() {
+    fun theRelationHandlesAreHiddenInInteract() {
+        state.switchTo(CanvasMode.INTERACT)
+        scene.render()
         val card = GraphCanvasPreview.positions.getValue("ENG-101")
         val handle = state.toScreen(
             Offset(
@@ -416,11 +488,11 @@ class CanvasInteractionTest {
         )
         move(state.toScreen(Offset(card.x + 40f, card.y + 40f)))
         move(handle)
-        // Arrange is the default, so the handle is not there. The drag falls through to the card.
+        // Interact holds no handles, so the drag reaches the card, which refuses to move.
         dragBy(handle, cardCentre("ENG-103") - handle)
 
-        assertNull(state.panel, "a handle drag offered a relation in Arrange")
-        assertTrue(log.none { it.startsWith("create") }, "Arrange created a relation: $log")
+        assertNull(state.panel, "a handle drag offered a relation in Interact")
+        assertTrue(log.none { it.startsWith("create") }, "Interact created a relation: $log")
     }
 
     @Test
@@ -445,6 +517,95 @@ class CanvasInteractionTest {
         // The bar is 24dp tall along the bottom; the readout sits at its right end.
         click(Offset(WIDTH - 30f, HEIGHT - 12f))
         assertEquals(1f, state.scale)
+    }
+
+    @Test
+    fun clickingACardInArrangeSwitchesToInteractAndOpensItsMenu() {
+        assertEquals(CanvasMode.ARRANGE, state.mode)
+        val at = cardCentre("ENG-101")
+        tapCanvas(at)
+
+        assertEquals(CanvasMode.INTERACT, state.mode, "the click did not switch mode")
+        assertEquals("Interact", state.toast?.text, "the switch said nothing")
+        val menu = state.menu
+        assertTrue(
+            menu is CanvasMenu.Node && menu.id == "ENG-101",
+            "the click did not open the card's menu: $menu",
+        )
+        write("canvas-interact-menu.png")
+    }
+
+    @Test
+    fun clickingAnEdgeInArrangeSwitchesToInteractAndOpensItsPanel() {
+        // The straight run below ENG-101, as in the right-click test.
+        val at = state.toScreen(Offset(195f, 210f))
+        tapCanvas(at)
+
+        assertEquals(CanvasMode.INTERACT, state.mode, "the edge click did not switch mode")
+        assertEquals(
+            CanvasPanel.Edit(EdgeKey("ENG-101", "ENG-103", RelationType.BLOCKS), at),
+            state.panel,
+        )
+    }
+
+    @Test
+    fun aModifierClickStillBuildsASelectionWithoutSwitchingMode() {
+        move(cardCentre("ENG-101"))
+        shiftClick(cardCentre("ENG-101"))
+        shiftClick(cardCentre("ENG-102"))
+
+        assertEquals(setOf("ENG-101", "ENG-102"), selection, "shift click did not accumulate")
+        assertEquals(CanvasMode.ARRANGE, state.mode, "a shift click switched mode")
+        assertNull(state.menu, "a shift click opened a menu")
+    }
+
+    @Test
+    fun theStatusSubmenuOffersTheTeamsWorkflowStates() {
+        val at = cardCentre("ENG-101")
+        rightClick(at)
+        click(menuRow(at, STATUS))
+        move(menuRow(submenuOrigin(at, STATUS), 1))
+        write("canvas-status-submenu.png")
+        click(menuRow(submenuOrigin(at, STATUS), 1))
+
+        assertEquals(listOf("state:ENG-101:s2:In Progress"), log)
+    }
+
+    @Test
+    fun thePullRequestRowOpensTheInfoWindow() {
+        // ENG-106's PR is the one with both branch names, so the window shows head → base.
+        val at = cardCentre("ENG-106")
+        rightClick(at)
+        click(menuRow(at, PULL_REQUEST))
+
+        val panel = state.prPanel
+        assertTrue(
+            panel != null && panel.url == "https://github.com/swim/swim/pull/419",
+            "the row did not open the pull-request window: $panel",
+        )
+        write("canvas-pr-window.png")
+    }
+
+    @Test
+    fun aPrChipClickOpensTheInfoWindowInsteadOfTheBrowser() {
+        // The chip sits in the footer of ENG-103, left of the assignee.
+        val card = GraphCanvasPreview.positions.getValue("ENG-103")
+        tapCanvas(
+            state.toScreen(
+                Offset(card.x + 78f, card.y + GraphCanvasDefaults.NodeHeight - 12f),
+            )
+        )
+
+        assertTrue(state.prPanel != null, "the chip opened no window")
+        assertTrue(log.none { it.startsWith("open") }, "the chip opened the browser: $log")
+    }
+
+    @Test
+    fun linkAPrByUrlAsksForOneAndReportsIt() {
+        val at = cardCentre("ENG-101")
+        rightClick(at)
+        click(menuRow(at, LINK_PR))
+        assertEquals("ENG-101", state.prUrlFor, "the input did not open")
     }
 
     // -- PR-derived edges and stacked cards -----------------------------------------------------
@@ -686,9 +847,15 @@ class CanvasInteractionTest {
         File("build/reports/$name").writeBytes(requireNotNull(scene.render().encodeToData()).bytes)
     }
 
+    // The node menu, in order: Open issue in Linear, Open GitHub PR, Pull request…, Copy ID,
+    // Assign to, Status, Priority, Points, Link a PR by URL…, Add relation, Relations,
+    // Remove from project.
     private companion object {
-        const val ASSIGN_TO = 2
-        const val ADD_RELATION = 3
-        const val RELATIONS = 4
+        const val PULL_REQUEST = 2
+        const val ASSIGN_TO = 4
+        const val STATUS = 5
+        const val LINK_PR = 8
+        const val ADD_RELATION = 9
+        const val RELATIONS = 10
     }
 }

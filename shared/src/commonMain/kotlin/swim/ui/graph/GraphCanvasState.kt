@@ -33,11 +33,23 @@ internal sealed interface CanvasMenu {
 /** A relation drag in flight, from one of a card's handles to wherever the pointer is. */
 internal data class LinkDrag(val from: String, val at: Offset, val type: RelationType)
 
+/** The pull request the info window is reading, anchored at [at] in screen pixels. */
+internal data class PrPanel(val url: String, val title: String, val at: Offset)
+
+/** A short note over the canvas. [id] rises every time, so the same text can be said twice. */
+internal data class CanvasToast(val text: String, val id: Int)
+
 /**
- * What a plain left drag does. Arrange moves cards and draws a selection box; Interact pans and
- * offers the relation handles. Held space pans in either one.
+ * What a plain left drag does. Arrange moves cards, draws a selection box, and draws relations
+ * from the card handles; Interact acts on what it is given and moves nothing. Scroll pans in both.
  */
 enum class CanvasMode { ARRANGE, INTERACT }
+
+/** What the toast says on the way into each mode. */
+internal fun CanvasMode.label(): String = when (this) {
+    CanvasMode.ARRANGE -> "Arrange"
+    CanvasMode.INTERACT -> "Interact"
+}
 
 /** Pick-target mode: the relation is chosen, and the next card click names the other end. */
 internal data class PickTarget(
@@ -63,6 +75,10 @@ class GraphCanvasState internal constructor() {
     internal var marquee by mutableStateOf<Rect?>(null)
     internal var panel by mutableStateOf<CanvasPanel?>(null)
     internal var menu by mutableStateOf<CanvasMenu?>(null)
+    internal var prPanel by mutableStateOf<PrPanel?>(null)
+
+    /** The issue the "Link a PR by URL" input is open for, if any. */
+    internal var prUrlFor by mutableStateOf<String?>(null)
     internal var pick by mutableStateOf<PickTarget?>(null)
     internal var link by mutableStateOf<LinkDrag?>(null)
     internal var dragIds by mutableStateOf<Set<String>>(emptySet())
@@ -89,13 +105,43 @@ class GraphCanvasState internal constructor() {
     /** Whether the gestures-and-shortcuts overlay is up. The shell shows it once on first run. */
     var shortcutsVisible by mutableStateOf(false)
 
-    /** UI state only. Every launch starts in Arrange. */
+    /** UI state only. Every launch starts in Arrange. Switch through [switchTo], never directly. */
     var mode by mutableStateOf(CanvasMode.ARRANGE)
+        private set
+
+    /** The note the toast is showing, if any. */
+    internal var toast by mutableStateOf<CanvasToast?>(null)
+    private var toasts = 0
+
+    /**
+     * Switches mode and says which one, from any source: a key, the toggle, or the click in
+     * Arrange that means "act on this". A switch to the mode already showing still says so, since
+     * the user asked and silence would read as a dead control.
+     */
+    fun switchTo(next: CanvasMode) {
+        mode = next
+        toasts++
+        toast = CanvasToast(next.label(), toasts)
+    }
+
+    /**
+     * The card whose drag Interact last refused, and how many refusals there have been. The card
+     * and the mode toggle both shake off the count, so a second refusal shakes again.
+     */
+    internal var refusedId by mutableStateOf<String?>(null)
+        private set
+    internal var refusals by mutableStateOf(0)
+        private set
+
+    /** Interact moves no card. The card shakes, the toggle shakes, and the caller beeps. */
+    internal fun refuseDrag(id: String) {
+        refusedId = id
+        refusals++
+    }
 
     internal var additive = false
-    internal var spaceDown = false
 
-    /** Set while the pointer rests on a relation handle, so a pan does not steal its drag. */
+    /** Set while the pointer rests on a relation handle, so a card drag does not steal it. */
     internal var overHandle = false
     private var fitted = false
 
@@ -158,6 +204,7 @@ class GraphCanvasState internal constructor() {
     fun dismissPanels() {
         panel = null
         menu = null
+        prPanel = null
         pick = null
         link = null
     }

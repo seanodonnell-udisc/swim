@@ -3,11 +3,9 @@ package swim.ui.app
 import androidx.compose.ui.geometry.Offset
 import swim.core.model.GraphData
 import swim.core.model.IssueNode
-import swim.core.model.RelationType
 import swim.core.session.GraphGrouping
 import swim.core.session.groupingOf
 import swim.layout.LayoutEdge
-import swim.layout.LayoutEdgeKind
 import swim.layout.LayoutNode
 import swim.layout.LayoutParams
 import swim.layout.LayoutResult
@@ -18,6 +16,8 @@ import swim.layout.reuseAndPlace
 import swim.ui.graph.EdgeKey
 import swim.ui.graph.GraphCanvasDefaults
 import swim.ui.graph.blocksEdgeKey
+import swim.ui.graph.layoutEdgesOf
+import swim.ui.graph.layoutNodesOf
 import swim.ui.graph.slotOf
 import swim.ui.graph.stackIndex
 import swim.ui.graph.stackKeyOf
@@ -116,46 +116,6 @@ internal fun moveGroup(
     delta: Offset,
 ): Map<String, Position> = positions.mapValues { (id, position) ->
     if (id in ids) Position(position.x + delta.x, position.y + delta.y) else position
-}
-
-/**
- * Cards are a fixed size, so every node is the same box. A pile of stacked cards is one box
- * instead of one per member: it takes a single slot, grown by the diagonal offset it draws with.
- */
-internal fun layoutNodesOf(graph: GraphData): List<LayoutNode> {
-    val index = stackIndex(visibleStacks(graph))
-    val taken = mutableSetOf<String>()
-    return graph.nodes.mapNotNull { node ->
-        val slot = slotOf(node.identifier, index)
-        if (!taken.add(slot)) return@mapNotNull null
-        val spread = index[node.identifier]?.let { stackSpread(it.size) } ?: 0f
-        LayoutNode(
-            slot,
-            GraphCanvasDefaults.NodeWidth + spread,
-            GraphCanvasDefaults.NodeHeight + spread,
-        )
-    }
-}
-
-/**
- * Only `blocks` shapes the placement; `related` nudges sibling order; `duplicate` says nothing.
- * Both ends run through the pile they belong to, so an edge onto one member pulls the whole pile.
- * An edge between two members of one pile has nowhere to go and is dropped.
- */
-internal fun layoutEdgesOf(graph: GraphData): List<LayoutEdge> {
-    val index = stackIndex(visibleStacks(graph))
-    val seen = mutableSetOf<LayoutEdge>()
-    return graph.edges.mapNotNull { edge ->
-        val kind = when (edge.type) {
-            RelationType.BLOCKS -> LayoutEdgeKind.BLOCKS
-            RelationType.RELATED -> LayoutEdgeKind.RELATED
-            RelationType.DUPLICATE -> return@mapNotNull null
-        }
-        val from = slotOf(edge.from, index)
-        val to = slotOf(edge.to, index)
-        if (from == to) return@mapNotNull null
-        LayoutEdge(from, to, kind).takeIf(seen::add)
-    }
 }
 
 /**

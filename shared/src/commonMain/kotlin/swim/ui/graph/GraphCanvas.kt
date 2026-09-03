@@ -24,6 +24,8 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -33,7 +35,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -61,7 +62,6 @@ import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.ui.input.pointer.isMetaPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
-import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
@@ -73,13 +73,20 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import swim.core.model.EdgeProvenance
 import swim.core.model.GraphData
 import swim.core.model.IssueNode
 import swim.core.model.PrStatus
 import swim.core.model.RelationType
+import swim.core.model.StateSummary
 import swim.core.model.UserSummary
+import swim.layout.LayoutEdge
+import swim.layout.LayoutEdgeKind
 import swim.layout.Position
+import swim.layout.routeEdges
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -107,6 +114,14 @@ data class GraphCanvasCallbacks(
     val onRemoveRelation: (edge: EdgeKey) -> Unit = {},
     val onNodesMoved: (Map<String, Position>) -> Unit = {},
     val onSelectionChange: (Set<String>) -> Unit = {},
+    val onSetState: (identifier: String, stateId: String, stateName: String) -> Unit = { _, _, _ -> },
+    val onSetPriority: (identifier: String, priority: Int) -> Unit = { _, _ -> },
+    /** A null estimate clears the points. */
+    val onSetEstimate: (identifier: String, estimate: Int?) -> Unit = { _, _ -> },
+    val onAttachPr: (identifier: String, url: String) -> Unit = { _, _ -> },
+    val onRemoveFromProject: (identifier: String) -> Unit = {},
+    /** Interact refused a card drag. The desktop beeps; every other platform stays quiet. */
+    val onRefused: () -> Unit = {},
     /** The canvas context menu asks for these two; the caller owns both. */
     val onRelayout: () -> Unit = {},
     val onReload: () -> Unit = {},
@@ -124,6 +139,8 @@ fun GraphCanvas(
     readySet: Set<String> = emptySet(),
     prStatuses: Map<String, PrStatus> = emptyMap(),
     users: List<UserSummary> = emptyList(),
+    /** The workflow states the Status submenu offers, by team key. */
+    states: Map<String, List<StateSummary>> = emptyMap(),
     // ponytail: reserved. Cycle detection is still worth having, and a future opt-in warning
     // style can read these, but every blocks edge draws the same today.
     @Suppress("UNUSED_PARAMETER") crossLinks: Set<EdgeKey> = emptySet(),
@@ -158,11 +175,20 @@ fun GraphCanvas(
     // Only the source id, so a link-drag frame does not recompose every card.
     val linkingFrom by remember(state) { derivedStateOf { state.link?.from } }
 
+    // The routes are found against the positions on screen, not against the ones `layout`
+    // produced: a saved layout, a re-layout and every drop have all moved cards since. A drag in
+    // flight is not in `positions`, so the search runs at a drop and not once a frame. It is a
+    // shortest path per crossing edge over a lane grid, which is worth keeping off this thread.
+    var routes by remember { mutableStateOf<Map<EdgeKey, List<Position>>>(emptyMap()) }
+    LaunchedEffect(drawn, positions) {
+        routes = withContext(Dispatchers.Default) { routesByEdge(drawn, positions) }
+    }
+
     val rects = buildRects(positions, ids, stackOf, state.stackFront, state.dragIds, state.dragDelta)
     // Both gestures outlive the composition that started them, so they read the current lambda
     // rather than closing over this frame's rects and selection. See the note in IssueCard.
     val onMenu = rememberUpdatedState<(Offset) -> Unit> { at ->
-        state.menu = menuAt(at, state, rects, drawn)
+        state.menu = menuAt(at, state, rects, drawn, routes)
     }
     val onBoxSelect = rememberUpdatedState<(Rect) -> Unit> { box ->
         // A marquee that touches one card of a pile takes the whole pile: the pile is one unit
@@ -192,9 +218,6 @@ fun GraphCanvas(
             .clipToBounds()
             .onSizeChanged { state.viewport = Size(it.width.toFloat(), it.height.toFloat()) }
             .focusRequester(focus)
-            // A KeyUp for space goes to whoever has focus, so focus lost while space is held
-            // would leave the canvas panning for good.
-            .onFocusChanged { if (!it.isFocused) state.spaceDown = false }
             .focusable()
             .onPreviewKeyEvent { event -> handleKey(event, state, callbacks) }
             .pointerHoverIcon(
@@ -207,13 +230,12 @@ fun GraphCanvas(
             .modifierTracking(state)
             .secondaryGesture(state, onMenu)
             .pickTarget(state, rects, callbacks)
-            .interactPan(state)
             .scrollAndZoom(state)
             // canvasTaps must come first. Its tap detector consumes the down, and the later a
             // pointer modifier is declared the earlier it sees the Main pass, so the other way
             // round the selection box never got an unconsumed down to start from.
-            .canvasTaps(state, rects, drawn, callbacks)
-            .panAndBoxSelect(state, onBoxSelect),
+            .canvasTaps(state, rects, drawn, routes, callbacks)
+            .pinchAndBoxSelect(state, onBoxSelect),
     ) {
         Box(
             modifier = Modifier
@@ -232,7 +254,7 @@ fun GraphCanvas(
                 scale(density, pivot = Offset.Zero) {
                     // The pointer is read here, not in the composition, so a mouse move redraws
                     // the edges and never recomposes a card.
-                    drawEdges(drawn, rects, hoveredEdge(state, drawn, rects))
+                    drawEdges(drawn, rects, routes, hoveredEdge(state, drawn, rects, routes))
                     // Both of these are affordances, not graph content, so they keep the same
                     // weight on screen at every zoom.
                     val zoom = state.scale
@@ -258,6 +280,11 @@ fun GraphCanvas(
                                 linking = id == linkingFrom,
                                 mode = state.mode,
                                 onOverHandle = { state.overHandle = it },
+                                shake = if (id == state.refusedId) state.refusals else 0,
+                                onOpenPr = { url, title ->
+                                    state.dismissPanels()
+                                    state.prPanel = PrPanel(url, title, state.pointer ?: Offset.Zero)
+                                },
                                 prStatuses = prStatuses,
                                 users = users,
                                 handlers = remember(id, selection, positions, ids, stackOf, callbacks) {
@@ -313,6 +340,7 @@ fun GraphCanvas(
         ModeToggle(state, Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 36.dp))
         HintBar(state, selection.size, Modifier.align(Alignment.BottomCenter))
         if (state.pick != null) PickHint(Modifier.align(Alignment.TopCenter))
+        ModeToast(state, Modifier.align(Alignment.TopCenter))
 
         // A PR-derived edge has no Linear relation behind it, so both surfaces that would offer
         // to change or delete one show what derived it instead.
@@ -334,7 +362,7 @@ fun GraphCanvas(
             if (derived == null) {
                 ContextMenuSurface(
                     menu = menu,
-                    entries = menuEntries(menu, drawn, nodes, users, ids, state, callbacks),
+                    entries = menuEntries(menu, drawn, nodes, users, states, ids, state, callbacks),
                     viewportHeight = Dp(state.viewport.height / density),
                     viewportWidth = Dp(state.viewport.width / density),
                     density = density,
@@ -348,6 +376,25 @@ fun GraphCanvas(
                     density = density,
                 )
             }
+        }
+        state.prPanel?.let { panel ->
+            PrInfoPanel(
+                panel = panel,
+                status = prStatuses[panel.url],
+                viewport = state.viewport,
+                density = density,
+                onOpen = { callbacks.onOpenUrl(panel.url) },
+            )
+        }
+        state.prUrlFor?.let { id ->
+            PrUrlDialog(
+                identifier = id,
+                onDismiss = { state.prUrlFor = null },
+                onSubmit = { url ->
+                    state.prUrlFor = null
+                    callbacks.onAttachPr(id, url)
+                },
+            )
         }
         if (state.shortcutsVisible) ShortcutsOverlay { state.shortcutsVisible = false }
     }
@@ -380,11 +427,12 @@ private fun menuAt(
     state: GraphCanvasState,
     rects: Map<String, Rect>,
     graph: GraphData,
+    routes: Map<EdgeKey, List<Position>>,
 ): CanvasMenu {
     val point = state.toCanvas(at)
     rects.entries.firstOrNull { it.value.contains(point) }
         ?.let { return CanvasMenu.Node(it.key, at) }
-    hitEdge(graph, rects, point, edgeTolerance(state))
+    hitEdge(graph, rects, point, edgeTolerance(state), routes)
         ?.let { return CanvasMenu.Edge(it, at) }
     return CanvasMenu.Empty(at)
 }
@@ -396,10 +444,36 @@ private fun hoveredEdge(
     state: GraphCanvasState,
     graph: GraphData,
     rects: Map<String, Rect>,
+    routes: Map<EdgeKey, List<Position>>,
 ): EdgeKey? {
     if (state.pick != null || state.link != null || state.menu != null) return null
     val at = state.pointer ?: return null
-    return hitEdge(graph, rects, state.toCanvas(at), edgeTolerance(state))
+    return hitEdge(graph, rects, state.toCanvas(at), edgeTolerance(state), routes)
+}
+
+/**
+ * The route for every drawn edge that needs one, keyed the way the canvas keys an edge. The
+ * router works in layout slots, so a pile of stacked cards is one box and an edge onto a member
+ * is an edge onto the pile, exactly as the placement saw it.
+ */
+private fun routesByEdge(
+    graph: GraphData,
+    positions: Map<String, Position>,
+): Map<EdgeKey, List<Position>> {
+    val nodes = layoutNodesOf(graph)
+    if (nodes.size < 2) return emptyMap()
+    val routed = routeEdges(nodes, positions, layoutEdgesOf(graph, duplicatesAsRelated = true))
+    if (routed.isEmpty()) return emptyMap()
+    val index = stackIndex(visibleStacks(graph))
+    return graph.edges.mapNotNull { edge ->
+        val kind = if (edge.type == RelationType.BLOCKS) {
+            LayoutEdgeKind.BLOCKS
+        } else {
+            LayoutEdgeKind.RELATED
+        }
+        val slot = LayoutEdge(slotOf(edge.from, index), slotOf(edge.to, index), kind)
+        routed[slot]?.let { edge.key() to it }
+    }.toMap()
 }
 
 private fun cardHandlers(
@@ -424,13 +498,19 @@ private fun cardHandlers(
                     state.bringToFront(key, id)
                 }
             }
-            callbacks.onSelectionChange(
-                when {
-                    !state.additive -> self
-                    id in selection -> selection - self
-                    else -> selection + self
-                }
-            )
+            // A held modifier is still building a selection, in either mode. A plain click is
+            // the interact gesture: it opens the card's menu, and says so if that meant a switch.
+            if (state.additive) {
+                callbacks.onSelectionChange(
+                    if (id in selection) selection - self else selection + self,
+                )
+                return@CardHandlers
+            }
+            if (state.mode != CanvasMode.INTERACT) state.switchTo(CanvasMode.INTERACT)
+            callbacks.onSelectionChange(self)
+            // The pointer is already tracked in the space every menu anchors in, and a tap is
+            // always where the pointer is, so the card does not have to report its own geometry.
+            state.menu = CanvasMenu.Node(id, state.pointer ?: Offset.Zero)
         },
         onOpen = { callbacks.onOpenIssue(id) },
         onDragStart = {
@@ -439,6 +519,11 @@ private fun cardHandlers(
             val moving = if (id in selection) selection else self
             state.dragIds = moving.mapTo(mutableSetOf()) { slotOf(it, stackOf) }
             state.dragDelta = Offset.Zero
+        },
+        onDragRefused = {
+            state.dismissPanels()
+            state.refuseDrag(id)
+            callbacks.onRefused()
         },
         onDrag = { delta -> state.dragDelta += delta },
         onDragEnd = {
@@ -491,10 +576,6 @@ private fun handleKey(
     state: GraphCanvasState,
     callbacks: GraphCanvasCallbacks,
 ): Boolean {
-    if (event.key == Key.Spacebar) {
-        state.spaceDown = event.type == KeyEventType.KeyDown
-        return true
-    }
     if (event.type != KeyEventType.KeyDown) return false
     return when (event.key) {
         Key.Slash -> {
@@ -511,11 +592,11 @@ private fun handleKey(
             true
         }
         Key.V -> {
-            state.mode = CanvasMode.ARRANGE
+            state.switchTo(CanvasMode.ARRANGE)
             true
         }
-        Key.H -> {
-            state.mode = CanvasMode.INTERACT
+        Key.I -> {
+            state.switchTo(CanvasMode.INTERACT)
             true
         }
         Key.Equals, Key.Plus, Key.NumPadAdd -> {
@@ -551,12 +632,12 @@ private fun Modifier.modifierTracking(state: GraphCanvasState) = pointerInput(Un
 }
 
 /**
- * The secondary and middle buttons, taken before any card sees them. A drag pans; a press that
- * does not travel opens the context menu. On macOS a ctrl+click arrives here too, because Compose
- * reports it as a secondary press.
+ * The secondary button, taken before any card sees it, opens the context menu. Nothing drags: the
+ * scroll wheel is the only way to pan, so a right press has one meaning and needs no travel guard.
+ * On macOS a ctrl+click arrives here too, because Compose reports it as a secondary press.
  *
  * `awaitFirstDown` answers only to the primary button on desktop, so no other handler in the
- * canvas — including a card's tap and drag detectors — reacts to these two buttons at all.
+ * canvas — including a card's tap and drag detectors — reacts to this button at all.
  */
 private fun Modifier.secondaryGesture(
     state: GraphCanvasState,
@@ -566,54 +647,15 @@ private fun Modifier.secondaryGesture(
         val event = awaitPointerEvent(PointerEventPass.Initial)
         val down = event.changes.firstOrNull { it.changedToDownIgnoreConsumed() }
             ?: return@awaitEachGesture
-        val secondary = event.buttons.isSecondaryPressed
-        if (!secondary && !event.buttons.isTertiaryPressed) return@awaitEachGesture
+        if (!event.buttons.isSecondaryPressed) return@awaitEachGesture
         down.consume()
-        var travelled = false
-        var last = down.position
         while (true) {
             val change = awaitPointerEvent(PointerEventPass.Initial).changes
                 .firstOrNull { it.id == down.id } ?: break
             change.consume()
             if (!change.pressed) break
-            if (!travelled &&
-                (change.position - down.position).getDistance() > viewConfiguration.touchSlop
-            ) {
-                travelled = true
-            }
-            if (travelled) state.panBy(change.position - last)
-            last = change.position
         }
-        if (secondary && !travelled) onMenu.value(down.position)
-    }
-}
-
-/**
- * In Interact, a left drag pans wherever it starts, cards included. The press is not consumed
- * until it travels, so a plain click still selects a card and still works on a chip. A press that
- * starts on a relation handle is left alone: that drag draws an edge.
- */
-private fun Modifier.interactPan(state: GraphCanvasState) = pointerInput(state) {
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        if (state.mode != CanvasMode.INTERACT || state.overHandle) return@awaitEachGesture
-        var travelled = false
-        var last = down.position
-        while (true) {
-            val change = awaitPointerEvent(PointerEventPass.Initial).changes
-                .firstOrNull { it.id == down.id } ?: break
-            if (!change.pressed) break
-            if (!travelled &&
-                (change.position - down.position).getDistance() > viewConfiguration.touchSlop
-            ) {
-                travelled = true
-            }
-            if (travelled) {
-                change.consume()
-                state.panBy(change.position - last)
-            }
-            last = change.position
-        }
+        onMenu.value(down.position)
     }
 }
 
@@ -643,7 +685,10 @@ private fun Modifier.pickTarget(
     }
 }
 
-/** Two-finger scroll pans both axes; ctrl or cmd with scroll zooms about the pointer. */
+/**
+ * Two-finger scroll pans both axes, in every mode; ctrl or cmd with scroll zooms about the
+ * pointer. This is the only way to pan: nothing on the canvas drags the view.
+ */
 private fun Modifier.scrollAndZoom(state: GraphCanvasState) = pointerInput(Unit) {
     awaitPointerEventScope {
         while (true) {
@@ -653,7 +698,7 @@ private fun Modifier.scrollAndZoom(state: GraphCanvasState) = pointerInput(Unit)
             val delta = change.scrollDelta
             val modifiers = event.keyboardModifiers
             if (modifiers.isCtrlPressed || modifiers.isMetaPressed) {
-                state.zoomBy(1f - delta.y * 0.12f, change.position)
+                state.zoomBy(zoomFactor(delta.y), change.position)
             } else {
                 state.panBy(Offset(-delta.x, -delta.y) * 48f)
             }
@@ -663,16 +708,30 @@ private fun Modifier.scrollAndZoom(state: GraphCanvasState) = pointerInput(Unit)
 }
 
 /**
- * Space with left drag pans. A plain left drag on empty canvas draws a selection box. Two
- * pointers pinch. The secondary and middle buttons are handled before this, in [secondaryGesture].
+ * How far one scroll event zooms.
+ *
+ * Two things a trackpad breaks, which a wheel never did. The obvious `1 - delta * step` turns
+ * NEGATIVE past a delta of about eight, and the clamp then slams the zoom to its floor in the
+ * middle of a gesture; exponential is always positive, and two notches always equal one of twice
+ * the size. And a flick reports a delta in the tens, which even done right would cross the whole
+ * zoom range at once, so one event is worth at most [MAX_NOTCH] of them.
  */
-private fun Modifier.panAndBoxSelect(
+internal fun zoomFactor(deltaY: Float): Float =
+    exp(-deltaY.coerceIn(-MAX_NOTCH, MAX_NOTCH) * 0.12f)
+
+private const val MAX_NOTCH = 4f
+
+/**
+ * A plain left drag on empty canvas draws a selection box, in Arrange only. Two pointers pinch.
+ * The secondary button is handled before this, in [secondaryGesture].
+ */
+private fun Modifier.pinchAndBoxSelect(
     state: GraphCanvasState,
     onBoxSelect: State<(Rect) -> Unit>,
 ) = pointerInput(state) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = true)
-        val panning = state.spaceDown || state.mode == CanvasMode.INTERACT
+        val boxing = state.mode == CanvasMode.ARRANGE
         val origin = down.position
         var centroid = origin
         var spread = 0f
@@ -708,22 +767,20 @@ private fun Modifier.panAndBoxSelect(
                 continue
             }
             moved = true
-            if (panning) {
-                state.panBy(change.position - change.previousPosition)
-            } else {
+            if (boxing) {
                 state.marquee = Rect(
                     min(origin.x, change.position.x),
                     min(origin.y, change.position.y),
                     max(origin.x, change.position.x),
                     max(origin.y, change.position.y),
                 )
+                change.consume()
             }
-            change.consume()
         }
 
         val box = state.marquee
         state.marquee = null
-        if (moved && !panning && !pinched && box != null) {
+        if (moved && boxing && !pinched && box != null) {
             onBoxSelect.value(
                 Rect(state.toCanvas(box.topLeft), state.toCanvas(box.bottomRight)),
             )
@@ -736,18 +793,21 @@ private fun Modifier.canvasTaps(
     state: GraphCanvasState,
     rects: Map<String, Rect>,
     graph: GraphData,
+    routes: Map<EdgeKey, List<Position>>,
     callbacks: GraphCanvasCallbacks,
-) = pointerInput(state, rects) {
+) = pointerInput(state, rects, routes) {
     detectTapGestures(
         onDoubleTap = { state.fitToContent() },
         onTap = { position ->
             val point = state.toCanvas(position)
-            val edge = hitEdge(graph, rects, point, edgeTolerance(state))
+            val edge = hitEdge(graph, rects, point, edgeTolerance(state), routes)
+            state.dismissPanels()
             if (edge == null) {
-                state.dismissPanels()
                 callbacks.onSelectionChange(emptySet())
             } else {
-                state.dismissPanels()
+                // Clicking an edge is an interact gesture wherever it lands, so it switches and
+                // then does the thing it would have done, rather than asking twice.
+                if (state.mode != CanvasMode.INTERACT) state.switchTo(CanvasMode.INTERACT)
                 state.panel = CanvasPanel.Edit(edge, position)
             }
         },
@@ -760,17 +820,19 @@ internal fun hitEdge(
     rects: Map<String, Rect>,
     point: Offset,
     tolerance: Float,
+    routes: Map<EdgeKey, List<Position>> = emptyMap(),
 ): EdgeKey? {
     var best: EdgeKey? = null
     var bestDistance = tolerance
     for (edge in graph.edges) {
         val from = rects[edge.from] ?: continue
         val to = rects[edge.to] ?: continue
+        val key = edge.key()
         // The corners, not the rounded path. A corner cuts at most the 5-unit bend radius.
-        val distance = distanceToPolyline(edgePoints(edge.type, from, to), point)
+        val distance = distanceToPolyline(edgePoints(edge.type, from, to, routes[key]), point)
         if (distance <= bestDistance) {
             bestDistance = distance
-            best = edge.key()
+            best = key
         }
     }
     return best
@@ -794,19 +856,19 @@ private fun edgeDashes(type: RelationType): FloatArray? = when (type) {
 private fun DrawScope.drawEdges(
     graph: GraphData,
     rects: Map<String, Rect>,
+    routes: Map<EdgeKey, List<Position>>,
     hovered: EdgeKey?,
 ) {
     for (edge in graph.edges) {
         val from = rects[edge.from] ?: continue
         val to = rects[edge.to] ?: continue
-        val hover = edge.key() == hovered
-        val ends = edgeEnds(edge.type, from, to)
-        val points = smoothStepPoints(
-            source = ends.source,
-            sourcePosition = ends.sourcePosition,
-            target = ends.target,
-            targetPosition = ends.targetPosition,
-        )
+        val key = edge.key()
+        val hover = key == hovered
+        // A routed edge is drawn as the polyline the router found, corners and all. Its ends are
+        // the router's, never re-derived: it may leave a card's top and meet another's bottom.
+        val points = edgePoints(edge.type, from, to, routes[key])
+        val arrivesAt = arrivalSide(points)
+        val landsOn = points.last()
         // A derived edge is the same solid red family, held back. It is a reading of the pull
         // requests, not a relation somebody wrote down, and it must say so at a glance.
         val base = edgeColor(edge.type).let {
@@ -824,8 +886,8 @@ private fun DrawScope.drawEdges(
             ),
         )
         when (edge.type) {
-            RelationType.BLOCKS -> drawPath(arrowHead(ends.target, ends.targetPosition, 9f), color)
-            RelationType.DUPLICATE -> drawPath(arrowHead(ends.target, ends.targetPosition, 6f), color)
+            RelationType.BLOCKS -> drawPath(arrowHead(landsOn, arrivesAt, 9f), color)
+            RelationType.DUPLICATE -> drawPath(arrowHead(landsOn, arrivesAt, 6f), color)
             RelationType.RELATED -> Unit
         }
     }

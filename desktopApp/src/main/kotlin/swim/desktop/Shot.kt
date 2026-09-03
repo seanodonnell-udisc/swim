@@ -70,7 +70,7 @@ fun main(args: Array<String>) {
         atFrame = 40 to { _ -> repeat(5) { zoom.send(AppCommand.ZOOM_OUT) } },
     )
 
-    // One shot per editing mode. Interact also hovers a card, so its handles show.
+    // One shot per editing mode. Arrange hovers a card, so its relation handles show.
     shoot(
         // 90 frames: these two stage a hover late, so they must not race the sandbox load.
         outDir, "p3d-shot-arrange.png", 90, graphEnv(),
@@ -79,7 +79,7 @@ fun main(args: Array<String>) {
     shoot(
         outDir, "p3d-shot-interact.png", 90, graphEnv(),
         atFrame = 70 to { scene ->
-            scene.sendKeyEvent(KeyEvent(Key.H, KeyEventType.KeyDown))
+            scene.sendKeyEvent(KeyEvent(Key.I, KeyEventType.KeyDown))
             scene.render()
             scene.move(FIRST_CARD)
         },

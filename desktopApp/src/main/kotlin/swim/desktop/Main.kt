@@ -68,6 +68,7 @@ fun main() {
         commands = commands,
         openUrl = ::openUrl,
         copyToClipboard = ::copyToClipboard,
+        beep = Toolkit.getDefaultToolkit()::beep,
         linearBrowserSignIn = { signInWithLinear(http) },
         devAutoload = System.getProperty("swim.dev.autoload"),
         log = Log::line,

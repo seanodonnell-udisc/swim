@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.Path
 import swim.core.model.IssueEdge
 import swim.core.model.RelationType
 import swim.layout.Position
+import kotlin.math.abs
 
 /**
  * Identifies one relation on the canvas. Linear relation ids do not survive a change, so the
@@ -80,6 +81,34 @@ internal fun edgePoints(type: RelationType, from: Rect, to: Rect): List<Offset> 
         target = ends.target,
         targetPosition = ends.targetPosition,
     )
+}
+
+/**
+ * The corners of one edge: the route the layout found for it when it has one, and the plain pair
+ * of anchors when it does not. A routed edge keeps the ends the router chose — it may leave the
+ * top of its card and meet the bottom of the other — so the anchors are never re-derived here.
+ */
+internal fun edgePoints(
+    type: RelationType,
+    from: Rect,
+    to: Rect,
+    route: List<Position>?,
+): List<Offset> =
+    if (route == null || route.size < 2) edgePoints(type, from, to)
+    else route.map { Offset(it.x, it.y) }
+
+/**
+ * Which side of the target card an edge lands on, read off the last stretch it travels. The
+ * arrowhead points into the card from there.
+ */
+internal fun arrivalSide(points: List<Offset>): EdgePosition {
+    val last = points.last()
+    val before = points[points.lastIndex - 1]
+    return if (abs(last.x - before.x) >= abs(last.y - before.y)) {
+        if (last.x >= before.x) EdgePosition.LEFT else EdgePosition.RIGHT
+    } else {
+        if (last.y >= before.y) EdgePosition.TOP else EdgePosition.BOTTOM
+    }
 }
 
 /**

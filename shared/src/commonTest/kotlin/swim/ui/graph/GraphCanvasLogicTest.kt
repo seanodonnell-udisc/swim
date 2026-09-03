@@ -267,6 +267,50 @@ class GraphCanvasLogicTest {
         assertNull(hitEdge(GraphCanvasPreview.graph, rects, Offset(-400f, -400f), 8f))
     }
 
+    /**
+     * A routed edge is drawn and hit along the polyline the router found, not along the plain
+     * pair of anchors. Its ends are the router's: it may leave a card's top and meet a bottom.
+     */
+    @Test
+    fun aRoutedEdgeFollowsItsWaypoints() {
+        val rects = GraphCanvasPreview.positions.mapValues { (_, position) -> nodeRect(position) }
+        val from = rects.getValue("ENG-101")
+        val to = rects.getValue("ENG-103")
+        // Out of the left side, down past the cards, and back in at the bottom.
+        val route = listOf(
+            Position(from.left, from.center.y),
+            Position(from.left - 60f, from.center.y),
+            Position(from.left - 60f, to.bottom + 40f),
+            Position(to.center.x, to.bottom + 40f),
+            Position(to.center.x, to.bottom),
+        )
+        val points = edgePoints(RelationType.BLOCKS, from, to, route)
+        assertEquals(route.map { Offset(it.x, it.y) }, points, "the route was not drawn verbatim")
+
+        // The last stretch runs upward, so the arrow lands on the target's bottom.
+        assertEquals(EdgePosition.BOTTOM, arrivalSide(points))
+
+        // A point on the detour hits the edge; the same graph without the route does not.
+        val onDetour = Offset(from.left - 60f, to.bottom + 40f - 30f)
+        val key = EdgeKey("ENG-101", "ENG-103", RelationType.BLOCKS)
+        assertEquals(
+            key,
+            hitEdge(GraphCanvasPreview.graph, rects, onDetour, 8f, mapOf(key to route)),
+        )
+        assertNull(hitEdge(GraphCanvasPreview.graph, rects, onDetour, 8f))
+    }
+
+    @Test
+    fun anEdgeWithNoRouteIsDrawnExactlyAsBefore() {
+        val rects = GraphCanvasPreview.positions.mapValues { (_, position) -> nodeRect(position) }
+        val from = rects.getValue("ENG-101")
+        val to = rects.getValue("ENG-103")
+        assertEquals(
+            edgePoints(RelationType.BLOCKS, from, to),
+            edgePoints(RelationType.BLOCKS, from, to, route = null),
+        )
+    }
+
     @Test
     fun minimapFitCentresTheContent() {
         val (scale, origin) = minimapFit(Rect(0f, 0f, 400f, 200f), width = 180f, height = 120f)
@@ -311,5 +355,31 @@ class GraphCanvasLogicTest {
         val view = Rect(-30f, 20f, 90f, 400f)
         val rect = minimapViewRect(view, content, width = 180f, height = 120f, inset = 1f)
         assertEquals(Rect(1f, 20f, 90f, 119f), rect)
+    }
+
+    /**
+     * The defect this pins: the old `1 - delta * 0.12` went negative past a delta of about eight,
+     * which a trackpad reports all the time, and the clamp then dropped the zoom to its floor.
+     */
+    @Test
+    fun theZoomFactorIsAlwaysPositiveAndNeverInverts() {
+        val deltas = listOf(-40f, -12f, -8.4f, -1f, -0.2f, 0f, 0.2f, 1f, 8.4f, 12f, 40f)
+        deltas.forEach { delta ->
+            assertTrue(zoomFactor(delta) > 0f, "a delta of $delta gave a non-positive factor")
+        }
+        // Scrolling up zooms in, down zooms out, and never the other way about.
+        assertTrue(zoomFactor(-1f) > 1f, "scrolling up did not zoom in")
+        assertTrue(zoomFactor(1f) < 1f, "scrolling down did not zoom out")
+        assertEquals(1f, zoomFactor(0f), absoluteTolerance = 0.0001f)
+        // Bigger is never smaller: the factor rises as the delta falls, with no flip anywhere.
+        deltas.zipWithNext { smaller, bigger ->
+            assertTrue(
+                zoomFactor(smaller) >= zoomFactor(bigger),
+                "the factor rose from $smaller to $bigger",
+            )
+        }
+        // And one flick never crosses the whole zoom range.
+        assertTrue(zoomFactor(40f) > 0.5f, "one event zoomed out too far: ${zoomFactor(40f)}")
+        assertTrue(zoomFactor(-40f) < 2f, "one event zoomed in too far: ${zoomFactor(-40f)}")
     }
 }

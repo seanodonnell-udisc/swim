@@ -131,16 +131,19 @@ class GroupLabelDragTest {
 
     @Test
     fun theLabelIsNotAGripInInteractMode() {
-        scene.sendKeyEvent(KeyEvent(Key.H, KeyEventType.KeyDown))
+        scene.sendKeyEvent(KeyEvent(Key.I, KeyEventType.KeyDown))
         scene.render()
+        assertEquals(CanvasMode.INTERACT, state.mode)
         val before = placement.positions
+        val view = state.offset
 
         val m1 = placement.groups.first { it.label == "M1" }
         drag(labelOf(m1), Offset(140f, 90f))
 
-        assertEquals(before, placement.positions, "the label dragged the area in Pan and link")
+        assertEquals(before, placement.positions, "the label dragged the area in Interact")
         assertTrue(saved.isEmpty(), "an Interact drag persisted an area offset")
-        assertTrue(state.offset != Offset.Zero, "the label drag did not pan instead")
+        // Nothing drags the view any more: the scroll wheel is the only way to pan.
+        assertEquals(view, state.offset, "the label drag panned the canvas")
     }
 
     /** The middle of a group's label chip, in screen pixels. */
