@@ -279,12 +279,21 @@ class GraphSession(
         return cacheKey(loaded, resolveGrouping(filterStore.state.value.groupBy, projected.value.nodes))
     }
 
-    /** Merges dragged node positions into the current query's saved layout. */
-    fun savePositions(moved: Map<String, Position>) {
+    /**
+     * Merges moved node positions into the current query's saved layout.
+     *
+     * [handEdited] marks the arrangement as the user's own, which is what stops the machine
+     * routing its connectors: see [EDITED_KEY]. It is true for every drag, because a drag is a
+     * hand on a card. Pass false when the app computed the placement itself — the tuck-under
+     * after a new blocks relation is user-*initiated* but machine-*placed*, and the principle
+     * keys on the hand, not the intent. Passing false never clears a mark already there.
+     */
+    fun savePositions(moved: Map<String, Position>, handEdited: Boolean = true) {
         if (moved.isEmpty()) return
         val key = layoutCacheKey()
         val snapshot = positions.get()
-        val merged = snapshot.byKey[key].orEmpty() + moved
+        val merged = snapshot.byKey[key].orEmpty() + moved +
+            if (handEdited) mapOf(EDITED_KEY to HAND_EDITED) else emptyMap()
         positions.set(PositionSnapshot(snapshot.byKey + (key to merged)))
     }
 

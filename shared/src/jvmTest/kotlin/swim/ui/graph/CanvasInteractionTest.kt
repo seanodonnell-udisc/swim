@@ -52,6 +52,7 @@ class CanvasInteractionTest {
     // Hoisted the way GraphScreen hoists them, so a drop really round trips.
     private var positions by mutableStateOf(GraphCanvasPreview.positions)
     private var selection by mutableStateOf(emptySet<String>())
+    private var avoidCollisions by mutableStateOf(true)
     private var reported: Map<String, Position> = emptyMap()
 
     private val scene = ImageComposeScene(WIDTH, HEIGHT, Density(1f)) {
@@ -63,6 +64,7 @@ class CanvasInteractionTest {
             prStatuses = GraphCanvasPreview.prStatuses,
             users = GraphCanvasPreview.users,
             states = GraphCanvasPreview.states,
+            avoidCollisions = avoidCollisions,
             crossLinks = GraphCanvasPreview.crossLinks,
             cycleEdges = GraphCanvasPreview.cycleEdges,
             selection = selection,
@@ -611,10 +613,14 @@ class CanvasInteractionTest {
     /**
      * The connector freeze: a routed edge kept its stale polyline for the whole drag while the
      * plain ones followed the pointer. Mid-drag it must fall back to the direct line, which is
-     * built from the moving rect, and on the drop it must take a fresh route.
+     * built from the moving rect.
+     *
+     * This is the very first drag on a fresh machine layout, which is the one case where the
+     * fallback still has work to do: the drag is what marks the arrangement hand-edited, and from
+     * the drop onwards the whole graph draws direct anyway. See `swim.core.session.EDITED_KEY`.
      */
     @Test
-    fun aRoutedEdgeFollowsTheDragAndReRoutesOnTheDrop() {
+    fun aRoutedEdgeFallsBackToDirectAsSoonAsItsCardMoves() {
         val routed = awaitRoutes()
         val edge = routed.keys.first()
         val before = state.routing.at
@@ -658,17 +664,54 @@ class CanvasInteractionTest {
         )
         scene.render()
 
-        // On the drop the positions moved, so a fresh search runs and the lanes come back.
+        // The drop moved the card, so whatever the canvas routes next describes the new places.
+        // Whether it routes at all is the caller's ruling, tested against `avoidCollisions`.
         val after = awaitRoutes()
-        assertTrue(after.isNotEmpty(), "nothing was routed after the drop")
         assertEquals(
             positions,
             state.routing.at,
-            "the new routes do not describe where the cards now are",
+            "the routes do not describe where the cards now are",
         )
         assertTrue(
-            state.routing.live(emptyMap(), positions, emptySet(), Offset.Zero).isNotEmpty(),
-            "every route was still stale after the drop settled",
+            after.isEmpty() ||
+                state.routing.live(emptyMap(), positions, emptySet(), Offset.Zero).isNotEmpty(),
+            "the routes stayed stale after the drop settled",
+        )
+    }
+
+    /**
+     * The tuck-under moves cards machine-side, without a drag. The canvas must notice and route
+     * the new placement, which is what keeps a pristine arrangement's connectors tidy.
+     */
+    @Test
+    fun aMachineSidePositionChangeLandsAFreshRouting() {
+        awaitRoutes()
+        val before = state.routing.at
+
+        // What the tuck does: new positions straight into the map, no pointer involved.
+        positions = positions + ("ENG-107" to Position(400f, 640f))
+        val after = awaitRoutes()
+
+        assertTrue(before != state.routing.at, "the routes were not searched again")
+        assertEquals(positions, state.routing.at, "the routes describe the old placement")
+        assertTrue(after.isNotEmpty(), "the new placement routed nothing")
+    }
+
+    /** A hand-arranged graph is the user's picture: the machine routes nothing on it. */
+    @Test
+    fun collisionAvoidanceOffLeavesEveryEdgeDirect() {
+        awaitRoutes()
+        assertTrue(state.routing.byEdge.isNotEmpty(), "the fresh layout routed nothing to begin with")
+
+        avoidCollisions = false
+        repeat(8) {
+            Thread.sleep(25)
+            scene.render()
+        }
+
+        assertTrue(
+            state.routing.byEdge.isEmpty(),
+            "a hand-arranged graph still routed ${state.routing.byEdge.size} edges",
         )
     }
 

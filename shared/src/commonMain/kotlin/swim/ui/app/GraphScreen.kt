@@ -317,7 +317,9 @@ internal fun GraphScreen(
             placement = placement.copy(positions = frame)
                 .let { it.copy(groups = groupBoxesOf(projected, grouping, frame)) }
         }
-        holder.session.savePositions(settled)
+        // The user drew the relation; the layout chose where the cards went. That is not a hand
+        // on a card, so the arrangement stays the machine's to route.
+        holder.session.savePositions(settled, handEdited = false)
         tuck = null
     }
 
@@ -582,6 +584,9 @@ internal fun GraphScreen(
                     prStatuses = prStatuses,
                     users = reference.users,
                     states = states,
+                    // Routing is the machine's guess at a tidy picture, and it is only welcome
+                    // until the user arranges the graph themselves.
+                    avoidCollisions = !placement.handEdited,
                     crossLinks = placement.crossLinks,
                     cycleEdges = placement.cycleEdges,
                     selection = selection,
@@ -644,7 +649,7 @@ internal fun GraphScreen(
                             // the way of the one the user just dropped. A drop is final.
                             val placed = placement.positions + moved
                             holder.session.savePositions(placed)
-                            placement = placement.copy(positions = placed)
+                            placement = placement.copy(positions = placed, handEdited = true)
                                 .let { it.copy(groups = groupBoxesOf(projected, grouping, placed)) }
                         },
                         onSelectionChange = { selection = it },
@@ -707,6 +712,7 @@ internal fun GraphScreen(
                                         )
                                         ),
                                 )
+                                placement = placement.copy(handEdited = true)
                                 areaDrag = Offset.Zero
                             },
                         )

@@ -141,6 +141,12 @@ fun GraphCanvas(
     users: List<UserSummary> = emptyList(),
     /** The workflow states the Status submenu offers, by team key. */
     states: Map<String, List<StateSummary>> = emptyMap(),
+    /**
+     * Whether connectors may take the long way round the cards. False once the user has arranged
+     * this graph by hand: the machine stops second-guessing the picture and every edge runs
+     * direct. See [swim.core.session.EDITED_KEY].
+     */
+    avoidCollisions: Boolean = true,
     // ponytail: reserved. Cycle detection is still worth having, and a future opt-in warning
     // style can read these, but every blocks edge draws the same today.
     @Suppress("UNUSED_PARAMETER") crossLinks: Set<EdgeKey> = emptySet(),
@@ -179,9 +185,12 @@ fun GraphCanvas(
     // produced: a saved layout, a re-layout and every drop have all moved cards since. A drag in
     // flight is not in `positions`, so the search runs at a drop and not once a frame. It is a
     // shortest path per crossing edge over a lane grid, which is worth keeping off this thread.
-    LaunchedEffect(drawn, positions) {
-        val found = withContext(Dispatchers.Default) { routesByEdge(drawn, positions) }
-        state.routing = Routing(found, positions)
+    LaunchedEffect(drawn, positions, avoidCollisions) {
+        state.routing = if (!avoidCollisions) {
+            Routing()
+        } else {
+            Routing(withContext(Dispatchers.Default) { routesByEdge(drawn, positions) }, positions)
+        }
     }
 
     val rects = buildRects(positions, ids, stackOf, state.stackFront, state.dragIds, state.dragDelta)

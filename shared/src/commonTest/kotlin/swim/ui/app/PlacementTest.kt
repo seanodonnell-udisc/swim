@@ -6,7 +6,10 @@ import swim.core.model.IssueNode
 import swim.core.model.RelationType
 import swim.core.model.WorkflowStateType
 import swim.core.model.FilterOptions
+import swim.core.session.EDITED_KEY
 import swim.core.session.GraphGrouping
+import swim.core.session.HAND_EDITED
+import swim.core.session.SettingsPositionStore
 import swim.core.session.cacheKey
 import androidx.compose.ui.geometry.Offset
 import swim.layout.LayoutEdge
@@ -430,6 +433,78 @@ class PlacementTest {
         assertEquals(current.getValue("A"), settled.getValue("A"), "the blocker moved")
         assertEquals(current.getValue("D"), settled.getValue("D"), "an unrelated card moved")
         assertEquals(current.keys, settled.keys, "the map lost or gained a card")
+    }
+
+    // -- the hand-edited mark -------------------------------------------------------------------
+
+    private val twoNodes = GraphData(
+        nodes = listOf(node("A"), node("B")),
+        edges = listOf(blocks("A", "B")),
+    )
+
+    /** A saved arrangement carrying the mark, as the position store would hand it back. */
+    private fun edited(key: String, positions: Map<String, Position>) =
+        PositionSnapshot(mapOf(key to positions + (EDITED_KEY to HAND_EDITED)))
+
+    @Test
+    fun aFreshLayoutIsTheMachinesToRouteAndAHandEditedOneIsNot() {
+        val fresh = placeGraph(twoNodes, GraphGrouping.NONE, KEY, PositionSnapshot())
+        assertTrue(!fresh.handEdited, "a fresh machine layout came back hand-edited")
+
+        val touched = placeGraph(twoNodes, GraphGrouping.NONE, KEY, edited(KEY, fresh.positions))
+        assertTrue(touched.handEdited, "a saved arrangement lost its hand-edited mark")
+    }
+
+    /**
+     * The mark rides in the position map, so it persists with the layout and comes back with it.
+     * It must never reach the layout as if it were a card.
+     */
+    @Test
+    fun theMarkSurvivesASaveAndLoadRoundTripWithoutBecomingANode() {
+        val fresh = placeGraph(twoNodes, GraphGrouping.NONE, KEY, PositionSnapshot())
+        val store = SettingsPositionStore(FakeSettings())
+        store.set(edited(KEY, fresh.positions))
+
+        val reloaded = store.get()
+        assertContains(reloaded.byKey.getValue(KEY), EDITED_KEY)
+
+        val placed = placeGraph(twoNodes, GraphGrouping.NONE, KEY, reloaded)
+        assertTrue(placed.handEdited, "the mark did not survive the round trip")
+        assertEquals(setOf("A", "B"), placed.positions.keys, "the mark was placed as a card")
+        assertEquals(fresh.positions, placed.positions, "the saved arrangement moved")
+    }
+
+    @Test
+    fun aRelayoutClearsTheMarkAndTheRoutesComeBack() {
+        val fresh = placeGraph(twoNodes, GraphGrouping.NONE, KEY, PositionSnapshot())
+        val saved = edited(KEY, fresh.positions)
+
+        val relaid = placeGraph(twoNodes, GraphGrouping.NONE, KEY, saved, relayout = true)
+        assertTrue(!relaid.handEdited, "a re-layout kept the hand-edited mark")
+        assertTrue(
+            EDITED_KEY !in relaid.snapshot.byKey.getValue(KEY),
+            "a re-layout left the mark in the saved arrangement",
+        )
+
+        // And it stays cleared on the next ordinary pass over what the re-layout saved.
+        assertTrue(
+            !placeGraph(twoNodes, GraphGrouping.NONE, KEY, relaid.snapshot).handEdited,
+            "the mark came back after the re-layout was saved",
+        )
+    }
+
+    @Test
+    fun eachArrangementCarriesItsOwnMark() {
+        val flat = "team=ENG|none"
+        val grouped = "team=ENG|milestone"
+        val fresh = placeGraph(twoNodes, GraphGrouping.NONE, flat, PositionSnapshot())
+        val snapshot = edited(flat, fresh.positions)
+
+        assertTrue(placeGraph(twoNodes, GraphGrouping.NONE, flat, snapshot).handEdited)
+        assertTrue(
+            !placeGraph(twoNodes, GraphGrouping.MILESTONE, grouped, snapshot).handEdited,
+            "the grouped arrangement inherited the flat one's hand-edited mark",
+        )
     }
 
     @Test

@@ -416,11 +416,53 @@ class GraphSessionTest {
         f.session.savePositions(mapOf("ENG-1" to Position(1f, 2f)))
         f.session.savePositions(mapOf("ENG-2" to Position(3f, 4f), "ENG-1" to Position(5f, 6f)))
 
+        // A drag is the user arranging the graph, so the arrangement is marked hand-edited and
+        // carries the mark alongside the cards. See [EDITED_KEY].
         assertEquals(
-            mapOf("ENG-1" to Position(5f, 6f), "ENG-2" to Position(3f, 4f)),
+            mapOf(
+                "ENG-1" to Position(5f, 6f),
+                "ENG-2" to Position(3f, 4f),
+                EDITED_KEY to HAND_EDITED,
+            ),
             f.positions.get().byKey.getValue(key),
         )
         assertEquals(cacheKey(FilterOptions(team = "ENG"), GraphGrouping.NONE), key)
+    }
+
+    /**
+     * The tuck-under after a new blocks relation: the user asked for it, but the layout chose
+     * where the cards went, so the arrangement is still the machine's to route.
+     */
+    @Test
+    fun aMachinePlacedSaveLeavesAPristineArrangementUnmarked() = runTest(UnconfinedTestDispatcher()) {
+        val f = fixture(Canned(GRAPH_PAGE))
+        f.store.setTeam("ENG")
+        val key = f.session.layoutCacheKey()
+
+        f.session.savePositions(mapOf("ENG-1" to Position(1f, 2f)), handEdited = false)
+
+        assertEquals(
+            mapOf("ENG-1" to Position(1f, 2f)),
+            f.positions.get().byKey.getValue(key),
+            "a machine-placed save marked the arrangement hand-edited",
+        )
+    }
+
+    /** And it never un-marks one: a hand-edited graph stays hand-edited. */
+    @Test
+    fun aMachinePlacedSaveKeepsAnExistingMark() = runTest(UnconfinedTestDispatcher()) {
+        val f = fixture(Canned(GRAPH_PAGE))
+        f.store.setTeam("ENG")
+        val key = f.session.layoutCacheKey()
+
+        f.session.savePositions(mapOf("ENG-1" to Position(1f, 2f)))
+        f.session.savePositions(mapOf("ENG-2" to Position(3f, 4f)), handEdited = false)
+
+        assertContains(
+            f.positions.get().byKey.getValue(key),
+            EDITED_KEY,
+            "a machine-placed save cleared the hand-edited mark",
+        )
     }
 
     @Test

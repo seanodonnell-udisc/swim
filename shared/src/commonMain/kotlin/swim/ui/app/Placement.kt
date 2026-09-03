@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Offset
 import swim.core.model.GraphData
 import swim.core.model.IssueNode
 import swim.core.session.GraphGrouping
+import swim.core.session.EDITED_KEY
 import swim.core.session.groupingOf
 import swim.layout.LayoutEdge
 import swim.layout.LayoutNode
@@ -40,6 +41,11 @@ data class GraphPlacement(
     val cycleEdges: Set<EdgeKey> = emptySet(),
     val groups: List<GroupBox> = emptyList(),
     val snapshot: PositionSnapshot = PositionSnapshot(),
+    /**
+     * Whether this arrangement has been moved by hand. Collision-avoiding connector routing stops
+     * for good once it has: see [swim.core.session.EDITED_KEY].
+     */
+    val handEdited: Boolean = false,
 )
 
 /**
@@ -51,6 +57,14 @@ data class GraphPlacement(
 internal const val GROUP_OFFSET_PREFIX = "@group:"
 
 internal fun groupOffsetKey(group: String): String = GROUP_OFFSET_PREFIX + group
+
+/**
+ * Whether this entry is bookkeeping rather than a card. An area's drag offset and the hand-edited
+ * mark both ride in a key's position map; neither is a node, so neither may reach the layout or
+ * the cache. A pile's `@stack:` key is a real layout node and is not reserved.
+ */
+internal fun isReserved(key: String): Boolean =
+    key.startsWith(GROUP_OFFSET_PREFIX) || key == EDITED_KEY
 
 /** The buckets for members that have no team, project, label or milestone. They sort last. */
 private val UNGROUPED = setOf("No project", "No label", "No milestone")
@@ -148,39 +162,45 @@ fun placeGraph(
     }
 
     if (relayout) {
+        // The saved arrangement goes, and the hand-edited mark goes with it: a re-layout is the
+        // user asking the machine to arrange the graph again, so the routes come back too.
         return GraphPlacement(
             positions = fresh.positions,
             crossLinks = fresh.crossLinks.mapTo(mutableSetOf()) { blocksEdgeKey(it.from, it.to) },
             cycleEdges = fresh.cycleEdges.mapTo(mutableSetOf()) { blocksEdgeKey(it.from, it.to) },
             groups = groupBoxesOf(graph, groupBy, fresh.positions),
             snapshot = PositionSnapshot(snapshot.byKey + (cacheKey to fresh.positions)),
+            handEdited = false,
         )
     }
 
     val placed = reuseAndPlace(cacheKey, fresh, nodes, forCache(snapshot, cacheKey))
-    val areaOffsets = snapshot.byKey[cacheKey].orEmpty()
-        .filterKeys { it.startsWith(GROUP_OFFSET_PREFIX) }
+    val saved = snapshot.byKey[cacheKey].orEmpty()
+    val reserved = saved.filterKeys(::isReserved)
     return GraphPlacement(
         positions = placed.positions,
         crossLinks = fresh.crossLinks.mapTo(mutableSetOf()) { blocksEdgeKey(it.from, it.to) },
         cycleEdges = fresh.cycleEdges.mapTo(mutableSetOf()) { blocksEdgeKey(it.from, it.to) },
         groups = groupBoxesOf(graph, groupBy, placed.positions),
-        // Only an inherit writes a new entry. Rebuild it on the real snapshot so the area
-        // offsets, which the cache never saw, are not dropped on the way back out.
+        // Only an inherit writes a new entry. Rebuild it on the real snapshot so the reserved
+        // entries, which the cache never saw, are not dropped on the way back out.
         snapshot = if (placed.inherited) {
-            PositionSnapshot(snapshot.byKey + (cacheKey to placed.positions + areaOffsets))
+            PositionSnapshot(snapshot.byKey + (cacheKey to placed.positions + reserved))
         } else {
             snapshot
         },
+        // Per key, and never inherited: a key that borrowed another's coordinates has not been
+        // arranged by hand under its own arrangement, so it is still the machine's to route.
+        handEdited = EDITED_KEY in saved,
     )
 }
 
 /**
  * What the layout cache is allowed to see.
  *
- * The area offsets are stripped: a reserved key would make an otherwise absent entry look
- * present, and `reuseAndPlace` reads a present entry as "run the overlap pass" instead of
- * "the fresh layout stands as it is".
+ * The reserved entries are stripped: one would make an otherwise absent entry look present, and
+ * `reuseAndPlace` reads a present entry as "run the overlap pass" instead of "the fresh layout
+ * stands as it is".
  *
  * Donor keys are also cut down to the ones with the same grouping. `reuseAndPlace` inherits the
  * saved layout that shares the most nodes, and every grouping of one query shares all of them,
@@ -197,9 +217,9 @@ private fun forCache(
 ): PositionSnapshot = PositionSnapshot(
     snapshot.byKey
         .filterKeys { it == cacheKey || groupingOf(it) == groupingOf(cacheKey) }
-        .mapValues { (_, saved) -> saved.filterKeys { !it.startsWith(GROUP_OFFSET_PREFIX) } }
-        // An entry that held only offsets is now empty, and `reuseAndPlace` reads a present but
-        // empty entry as "run the overlap pass". It must look absent instead.
+        .mapValues { (_, saved) -> saved.filterKeys { !isReserved(it) } }
+        // An entry that held only reserved keys is now empty, and `reuseAndPlace` reads a present
+        // but empty entry as "run the overlap pass". It must look absent instead.
         .filterValues { it.isNotEmpty() },
 )
 

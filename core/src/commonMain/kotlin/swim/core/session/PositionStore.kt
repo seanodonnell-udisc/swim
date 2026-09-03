@@ -21,6 +21,29 @@ interface PositionStore {
 /** The settings key node positions persist under. */
 const val POSITIONS_KEY: String = "swim.positions"
 
+/**
+ * Marks one saved arrangement as touched by hand.
+ *
+ * It is a reserved entry inside that arrangement's own position map, the way `@group:` holds an
+ * area's drag offset and `@stack:` names a pile. A Linear identifier is `TEAM-123`, so it can
+ * never start with `@` and can never collide with a real node. Riding in the map is what makes it
+ * free to persist: it is written, read and thrown away with the layout it describes, and no
+ * second store has to be kept in step with it.
+ *
+ * What it decides: collision-avoiding connector routing is the machine's guess at a tidy picture,
+ * and it is only welcome until the user arranges the graph themselves. Once a card, a pile or an
+ * area has been moved under a key, that key draws direct connectors for good — what the user saw
+ * while dragging is what stays, on this launch and every one after. A re-layout throws the whole
+ * saved arrangement away, this mark with it, so the routes come back.
+ *
+ * Every consumer strips it before the layout or the cache sees the map: it is not a node and
+ * [HAND_EDITED], its value, means nothing.
+ */
+const val EDITED_KEY: String = "@edited"
+
+/** The value stored against [EDITED_KEY]. Only the presence of the key carries meaning. */
+val HAND_EDITED: Position = Position(0f, 0f)
+
 /** A [PositionStore] over one JSON string in platform settings. */
 class SettingsPositionStore(
     private val settings: Settings,
