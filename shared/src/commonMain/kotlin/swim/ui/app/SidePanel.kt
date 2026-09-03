@@ -147,7 +147,6 @@ private fun PanelHeader(collapsed: Boolean, onToggle: () -> Unit) {
         // A plain glyph, never an emoji: a coloured glyph is the brightest thing in the chrome.
         IconGlyph(
             glyph = if (collapsed) "»" else "«",
-            tooltip = if (collapsed) "Show the panel (⌘\\)" else "Hide the panel (⌘\\)",
             onClick = onToggle,
         )
         if (!collapsed) {
@@ -179,44 +178,26 @@ internal fun PanelSection(title: String, content: @Composable ColumnScope.() -> 
     }
 }
 
-/** A one-glyph button with a hover label. */
+/** A one-glyph button. Hover brightens it; there is no label. */
 @Composable
 internal fun IconGlyph(
     glyph: String,
-    tooltip: String,
     onClick: () -> Unit,
     color: Color = Swim.TextMuted,
     modifier: Modifier = Modifier,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
-    Box(modifier = modifier) {
-        Text(
-            text = glyph,
-            color = if (hovered) Swim.Text else color,
-            fontSize = 12.sp,
-            modifier = Modifier
-                .hoverable(interaction)
-                .pointerHoverIcon(PointerIcon.Hand)
-                .pointerInput(glyph) { detectTapGestures { onClick() } }
-                .padding(horizontal = 3.dp, vertical = 2.dp),
-        )
-        if (hovered) {
-            Text(
-                text = tooltip,
-                color = Swim.Text,
-                fontSize = 10.sp,
-                maxLines = 1,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .offset(y = 20.dp)
-                    .wrapContentSize(unbounded = true, align = Alignment.TopStart)
-                    .background(Swim.Bg, RoundedCornerShape(4.dp))
-                    .border(1.dp, Swim.Border, RoundedCornerShape(4.dp))
-                    .padding(horizontal = 6.dp, vertical = 3.dp),
-            )
-        }
-    }
+    Text(
+        text = glyph,
+        color = if (hovered) Swim.Text else color,
+        fontSize = 12.sp,
+        modifier = modifier
+            .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .pointerInput(glyph) { detectTapGestures { onClick() } }
+            .padding(horizontal = 3.dp, vertical = 2.dp),
+    )
 }
 
 /**
@@ -246,8 +227,8 @@ internal fun FilterSummaryChip(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        onOpen?.let { IconGlyph("↗", "Open in Linear", it) }
-        IconGlyph("✕", "Clear this filter", onDismiss)
+        onOpen?.let { IconGlyph("↗", it) }
+        IconGlyph("✕", onDismiss)
     }
 }
 
