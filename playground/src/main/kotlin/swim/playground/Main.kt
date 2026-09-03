@@ -188,13 +188,18 @@ private fun DrawScope.drawGraph(graph: SampleGraph, result: LayoutResult, measur
     for (edge in graph.edges) {
         val from = rects[edge.from] ?: continue
         val to = rects[edge.to] ?: continue
-        when {
-            edge.kind == LayoutEdgeKind.RELATED ->
-                drawEdge(from, to, RelatedLine, arrow = false, dash = floatArrayOf(2f, 7f))
-
-            edge in cycles -> drawEdge(from, to, CycleLine, arrow = true, dash = null)
-            edge in crossLinks -> drawEdge(from, to, CrossLine, arrow = true, dash = floatArrayOf(12f, 8f))
-            else -> drawEdge(from, to, BlocksLine, arrow = true, dash = null)
+        val (color, dash) = when {
+            edge.kind == LayoutEdgeKind.RELATED -> RelatedLine to floatArrayOf(2f, 7f)
+            edge in cycles -> CycleLine to null
+            edge in crossLinks -> CrossLine to floatArrayOf(12f, 8f)
+            else -> BlocksLine to null
+        }
+        val arrow = edge.kind != LayoutEdgeKind.RELATED
+        val route = result.routes[edge]
+        if (route == null) {
+            drawEdge(from, to, color, arrow, dash)
+        } else {
+            drawRoute(route.map { Offset(it.x, it.y) }, color, arrow, dash)
         }
     }
 
@@ -211,6 +216,21 @@ private fun DrawScope.drawGraph(graph: SampleGraph, result: LayoutResult, measur
             ),
         )
     }
+}
+
+/** A routed edge, drawn as the plain polyline the layout handed over. */
+private fun DrawScope.drawRoute(points: List<Offset>, color: Color, arrow: Boolean, dash: FloatArray?) {
+    for ((start, end) in points.zipWithNext()) {
+        drawLine(
+            color = color,
+            start = start,
+            end = end,
+            strokeWidth = 1.8f,
+            cap = StrokeCap.Round,
+            pathEffect = dash?.let { PathEffect.dashPathEffect(it) },
+        )
+    }
+    if (arrow && points.size >= 2) drawArrowHead(points[points.lastIndex - 1], points.last(), color)
 }
 
 private fun DrawScope.drawEdge(from: Rect, to: Rect, color: Color, arrow: Boolean, dash: FloatArray?) {

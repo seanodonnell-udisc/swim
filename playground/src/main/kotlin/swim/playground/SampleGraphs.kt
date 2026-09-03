@@ -14,6 +14,7 @@ val sampleGraphs: List<SampleGraph> = listOf(
     wideFanOut(),
     deepChain(),
     relatedTrees(),
+    levelSkips(),
     mixed(),
     realProject(),
 )
@@ -72,6 +73,29 @@ private fun relatedTrees() = SampleGraph(
         blocks("C", "C2"),
         related("A1", "C1"),
         related("A2", "C2"),
+    ),
+)
+
+// Every way an edge used to cross a card: a blocker that skips three levels, a cycle that
+// retraces its own column, and a related pair with four cards between them on one row.
+private fun levelSkips() = SampleGraph(
+    name = "level skips and cycles",
+    nodes = listOf("A", "B", "C", "D", "E", "P", "P1", "P2", "P3", "P4", "P5").map { card(it) },
+    edges = listOf(
+        blocks("A", "B"),
+        blocks("B", "C"),
+        blocks("C", "D"),
+        blocks("D", "E"),
+        blocks("A", "D"),
+        blocks("E", "B"),
+        blocks("P", "P1"),
+        blocks("P", "P2"),
+        blocks("P", "P3"),
+        blocks("P", "P4"),
+        blocks("P", "P5"),
+        related("P1", "P5"),
+        related("P2", "P4"),
+        related("A", "P3"),
     ),
 )
 

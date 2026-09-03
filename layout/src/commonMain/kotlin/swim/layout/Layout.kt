@@ -32,6 +32,8 @@ data class LayoutParams(
     val maxRowWidth: Float = 2600f,
     /** Sibling order. [relatedAffinityWeight] ordering runs after this one and replaces it. */
     val childOrder: ChildOrder = ChildOrder.SHORTEST_FIRST,
+    /** How far apart two routed edges run when they share a corridor. See [routeEdges]. */
+    val laneWidth: Float = 24f,
 )
 
 /** The top-left corner of a node. */
@@ -42,13 +44,28 @@ data class LayoutResult(
     val positions: Map<String, Position>,
     val crossLinks: List<LayoutEdge>,
     val cycleEdges: List<LayoutEdge>,
+    /** Corner points for the edges that cannot run straight. See [routeEdges] for the contract. */
+    val routes: Map<LayoutEdge, List<Position>> = emptyMap(),
 )
 
-/** Places [nodes] as tidy blocker-trees: layered by blocker depth, packed side by side. */
+/**
+ * Places [nodes] as tidy blocker-trees: layered by blocker depth, packed side by side, and
+ * routes the edges that cannot then run straight.
+ */
 fun layout(
     nodes: List<LayoutNode>,
     edges: List<LayoutEdge>,
     params: LayoutParams = LayoutParams(),
+): LayoutResult {
+    val placed = place(nodes, edges, params)
+    return placed.copy(routes = routeEdges(nodes, placed.positions, edges, params))
+}
+
+/** The placement on its own, for the callers that route nothing. */
+internal fun place(
+    nodes: List<LayoutNode>,
+    edges: List<LayoutEdge>,
+    params: LayoutParams,
 ): LayoutResult {
     val widths = nodes.associate { it.id to it.width }
     val blocks = edges.filter {
@@ -90,12 +107,14 @@ fun layout(
     val bottoms = nodes.associate { it.id to tops.getValue(levels.getValue(it.id)) + it.height }
     val packed = packTrees(trees, widths, bottoms, params.treeGap, params.maxRowWidth)
 
+    val positions = nodes.associate { node ->
+        val center = packed.centers.getValue(node.id)
+        val shelf = packed.shelfTops.getValue(node.id)
+        node.id to Position(center - node.width / 2f, shelf + tops.getValue(levels.getValue(node.id)))
+    }
+
     return LayoutResult(
-        positions = nodes.associate { node ->
-            val center = packed.centers.getValue(node.id)
-            val shelf = packed.shelfTops.getValue(node.id)
-            node.id to Position(center - node.width / 2f, shelf + tops.getValue(levels.getValue(node.id)))
-        },
+        positions = positions,
         crossLinks = forest.crossLinks + cycleEdges,
         cycleEdges = cycleEdges,
     )
