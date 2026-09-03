@@ -17,6 +17,7 @@ import swim.ui.graph.GraphCanvasDefaults
 import swim.ui.graph.STACK_OFFSET
 import swim.ui.graph.STACK_PREFIX
 import swim.ui.graph.blocksEdgeKey
+import swim.ui.graph.stackKeyOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertContains
@@ -320,6 +321,64 @@ class PlacementTest {
         val relaid = placeGraph(milestoned, GraphGrouping.MILESTONE, key, snapshot, relayout = true)
         assertEquals(plain.positions, relaid.positions)
         assertTrue(relaid.snapshot.byKey.getValue(key).keys.none { it.startsWith("@group:") })
+    }
+
+    /** P and Q are one pile; P is the front member because its identifier sorts first. */
+    private fun stacked(qMilestone: String?) = GraphData(
+        nodes = listOf(
+            node("A", milestone = "M1"),
+            node("P", milestone = "M1"),
+            node("Q", milestone = qMilestone),
+            node("C", milestone = "M2"),
+        ),
+        edges = listOf(blocks("A", "P")),
+        stacks = listOf(setOf("P", "Q")),
+    )
+
+    private val pile = stackKeyOf(setOf("P", "Q"))
+
+    @Test
+    fun aPileIsPlacedInsideItsAreaByAFreshGroupedLayout() {
+        val placed = placeGraph(stacked("M1"), GraphGrouping.MILESTONE, KEY, PositionSnapshot())
+
+        val at = placed.positions[pile]
+        assertTrue(at != null, "the pile got no position: ${placed.positions.keys}")
+        assertTrue(placed.positions["P"] == null, "a stacked member took a slot of its own")
+
+        val m1 = placed.groups.first { it.label == "M1" }
+        assertTrue(
+            at.x >= m1.x && at.y >= m1.y && at.x <= m1.x + m1.width && at.y <= m1.y + m1.height,
+            "the pile landed outside M1: $at against $m1",
+        )
+        assertEquals(setOf("A", pile), idsIn(stacked("M1"), GraphGrouping.MILESTONE, "M1"))
+    }
+
+    @Test
+    fun aPileThatSpansTwoAreasGoesToItsFrontMember() {
+        val graph = stacked("M2")
+        val placed = placeGraph(graph, GraphGrouping.MILESTONE, KEY, PositionSnapshot())
+
+        assertTrue(placed.positions[pile] != null, "the pile got no position")
+        // P is the front member and sits in M1, so the pile does too. It is in M1 only.
+        assertEquals("M1", slotGroups(graph, GraphGrouping.MILESTONE).getValue(pile))
+        assertEquals(setOf("A", pile), idsIn(graph, GraphGrouping.MILESTONE, "M1"))
+        assertEquals(setOf("C"), idsIn(graph, GraphGrouping.MILESTONE, "M2"))
+    }
+
+    @Test
+    fun reLayoutPlacesThePileToo() {
+        val graph = stacked("M1")
+        val relaid = placeGraph(graph, GraphGrouping.MILESTONE, KEY, PositionSnapshot(), relayout = true)
+        assertTrue(relaid.positions[pile] != null, "Re-layout dropped the pile")
+        assertEquals(relaid.positions, relaid.snapshot.byKey.getValue(KEY))
+    }
+
+    @Test
+    fun aFlatLayoutStillPlacesEveryPile() {
+        val graph = stacked("M1")
+        val placed = placeGraph(graph, GraphGrouping.NONE, KEY, PositionSnapshot())
+        assertEquals(setOf("A", pile, "C"), placed.positions.keys)
+        assertTrue(placed.groups.isEmpty())
     }
 
     @Test

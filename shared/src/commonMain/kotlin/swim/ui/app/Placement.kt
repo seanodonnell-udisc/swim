@@ -20,6 +20,7 @@ import swim.ui.graph.GraphCanvasDefaults
 import swim.ui.graph.blocksEdgeKey
 import swim.ui.graph.slotOf
 import swim.ui.graph.stackIndex
+import swim.ui.graph.stackKeyOf
 import swim.ui.graph.stackSpread
 import swim.ui.graph.visibleStacks
 
@@ -90,12 +91,23 @@ internal fun withoutCrossGroupEdges(graph: GraphData, groupBy: GraphGrouping): G
     )
 }
 
-/** The layout slots in one area: one per card, and one per pile of stacked cards. */
-internal fun idsIn(graph: GraphData, groupBy: GraphGrouping, group: String): Set<String> {
+/**
+ * The area every layout slot belongs to. A pile is one slot, so it belongs to exactly one area:
+ * the one holding its front member, which is the lowest identifier and the member [stackKeyOf]
+ * already names the pile after. A pile whose members span areas still renders, in that one.
+ */
+internal fun slotGroups(graph: GraphData, groupBy: GraphGrouping): Map<String, String> {
     val index = stackIndex(visibleStacks(graph))
-    return graph.nodes.filter { groupKeyOf(it, groupBy) == group }
-        .mapTo(mutableSetOf()) { slotOf(it.identifier, index) }
+    val out = LinkedHashMap<String, String>()
+    for (node in graph.nodes.sortedBy { it.identifier }) {
+        out.getOrPut(slotOf(node.identifier, index)) { groupKeyOf(node, groupBy) }
+    }
+    return out
 }
+
+/** The layout slots in one area: one per card, and one per pile of stacked cards. */
+internal fun idsIn(graph: GraphData, groupBy: GraphGrouping, group: String): Set<String> =
+    slotGroups(graph, groupBy).filterValues { it == group }.keys
 
 /** Translates [ids] by [delta] and leaves every other node where it is. */
 internal fun moveGroup(
@@ -239,13 +251,13 @@ private fun layoutGrouped(
     params: LayoutParams,
     offsets: Map<String, Position>,
 ): LayoutResult {
-    val byNode = nodes.associateBy { it.id }
+    // Keyed by slot, like `nodes` and `edges`. Partitioning the original identifiers instead
+    // dropped every pile: a stacked member's identifier names no layout node, so the pile
+    // landed in no area and was never placed.
+    val groupOf = slotGroups(graph, groupBy)
     val members = LinkedHashMap<String, MutableList<LayoutNode>>()
-    val groupOf = HashMap<String, String>()
-    for (node in graph.nodes) {
-        val key = groupKeyOf(node, groupBy)
-        groupOf[node.identifier] = key
-        byNode[node.identifier]?.let { members.getOrPut(key) { mutableListOf() }.add(it) }
+    for (slot in nodes) {
+        members.getOrPut(groupOf[slot.id] ?: continue) { mutableListOf() }.add(slot)
     }
     val ordered = members.entries.sortedWith(GROUP_ORDER)
 
@@ -291,13 +303,12 @@ internal fun groupBoxesOf(
     positions: Map<String, Position>,
 ): List<GroupBox> {
     if (groupBy == GraphGrouping.NONE) return emptyList()
-    val index = stackIndex(visibleStacks(graph))
+    val spreads = visibleStacks(graph).associate { stackKeyOf(it) to stackSpread(it.size) }
     // Position and how far past it the slot reaches: a pile is wider and taller than one card.
     val members = LinkedHashMap<String, MutableList<Pair<Position, Float>>>()
-    for (node in graph.nodes) {
-        val position = positions[slotOf(node.identifier, index)] ?: continue
-        val spread = index[node.identifier]?.let { stackSpread(it.size) } ?: 0f
-        members.getOrPut(groupKeyOf(node, groupBy)) { mutableListOf() }.add(position to spread)
+    for ((slot, key) in slotGroups(graph, groupBy)) {
+        val position = positions[slot] ?: continue
+        members.getOrPut(key) { mutableListOf() }.add(position to (spreads[slot] ?: 0f))
     }
     return members.entries.sortedWith(GROUP_ORDER).map { (label, group) ->
         val left = group.minOf { it.first.x } - GROUP_MARGIN
