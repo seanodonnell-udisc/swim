@@ -75,6 +75,13 @@ internal const val ISSUE_BY_UUID_QUERY: String = """query IssueById(${'$'}id: St
 
 internal const val TEAMS_QUERY: String = """query Teams { teams { nodes { id key name } } }"""
 
+internal const val WORKFLOW_STATES_BY_TEAM_QUERY: String =
+    """query WorkflowStatesByTeam(${'$'}teamId: ID!) {
+  workflowStates(filter: { team: { id: { eq: ${'$'}teamId } } }) { nodes { id name type position } }
+}"""
+
+internal const val ORGANIZATION_QUERY: String = """query Organization { organization { urlKey } }"""
+
 internal const val PROJECTS_QUERY: String = """query Projects { projects { nodes { id name state } } }"""
 
 internal const val PROJECTS_BY_TEAM_QUERY: String = """query ProjectsByTeam(${'$'}teamId: ID!) {
@@ -100,7 +107,7 @@ internal const val LABELS_BY_TEAM_QUERY: String =
 // exceeds Linear's per-query complexity cap.
 internal const val PROJECT_SUMMARIES_QUERY: String = """query ProjectSummaries(${'$'}first: Int, ${'$'}after: String) {
   projects(first: ${'$'}first, after: ${'$'}after, filter: { state: { nin: ["completed", "canceled"] } }) {
-    nodes { id name state teams(first: 10) { nodes { key } } }
+    nodes { id name state url teams(first: 10) { nodes { key } } }
     pageInfo { hasNextPage endCursor }
   }
 }"""
@@ -126,4 +133,11 @@ internal const val DELETE_RELATION_MUTATION: String = """mutation DeleteRelation
 internal const val UPDATE_ISSUE_MUTATION: String =
     """mutation UpdateIssue(${'$'}id: String!, ${'$'}input: IssueUpdateInput!) {
   issueUpdate(id: ${'$'}id, input: ${'$'}input) { success }
+}"""
+
+// Linear recognizes a GitHub URL automatically and creates a rich attachment for it; no
+// special-casing is needed here.
+internal const val ATTACH_URL_MUTATION: String =
+    """mutation AttachUrl(${'$'}issueId: String!, ${'$'}url: String!) {
+  attachmentLinkURL(issueId: ${'$'}issueId, url: ${'$'}url) { success }
 }"""

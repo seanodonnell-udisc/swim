@@ -237,6 +237,36 @@ class GraphSession(
         reload()
     }
 
+    /** Moves an issue to a different workflow state, then reloads. */
+    suspend fun setState(identifier: String, stateId: String) {
+        client.setState(identifier, stateId)
+        reload()
+    }
+
+    /** Changes an issue's priority, then reloads. */
+    suspend fun setPriority(identifier: String, priority: Int) {
+        client.setPriority(identifier, priority)
+        reload()
+    }
+
+    /** Sets an issue's estimate, or clears it when [estimate] is null, then reloads. */
+    suspend fun setEstimate(identifier: String, estimate: Int?) {
+        client.setEstimate(identifier, estimate)
+        reload()
+    }
+
+    /** Removes an issue from its project, then reloads. */
+    suspend fun removeFromProject(identifier: String) {
+        client.removeFromProject(identifier)
+        reload()
+    }
+
+    /** Attaches a pull request (or any URL) to an issue, then reloads. */
+    suspend fun attachPr(identifier: String, url: String) {
+        client.attachPrUrl(identifier, url)
+        reload()
+    }
+
     /**
      * The key the visible query's hand-placed positions are saved under. The filters come from
      * the loaded graph, not from the live filter bar, which runs ahead of it as soon as the user

@@ -41,6 +41,7 @@ import swim.core.model.ProjectSummary
 import swim.core.model.RateLimitedError
 import swim.core.model.RelationType
 import swim.core.model.ScopeError
+import swim.core.model.StateSummary
 import swim.core.model.SwimError
 import swim.core.model.TeamSummary
 import swim.core.model.UserSummary
@@ -65,7 +66,10 @@ fun apiKeyAuth(apiKey: String): AuthHeaderProvider = AuthHeaderProvider { apiKey
 fun oauthAuth(accessToken: suspend () -> String): AuthHeaderProvider =
     AuthHeaderProvider { "Bearer ${accessToken()}" }
 
-/** Fields an issue update may change. `clearAssignee` sends an explicit null. */
+/** A team's Linear page. Team has no `url` field of its own, unlike project. */
+fun teamUrl(urlKey: String, teamKey: String): String = "https://linear.app/$urlKey/team/$teamKey"
+
+/** Fields an issue update may change. `clearAssignee`, `clearProject` and `clearEstimate` send an explicit null. */
 data class IssueUpdate(
     val title: String? = null,
     val description: String? = null,
@@ -73,8 +77,11 @@ data class IssueUpdate(
     val stateId: String? = null,
     val labelIds: List<String>? = null,
     val projectId: String? = null,
+    val clearProject: Boolean = false,
     val assigneeId: String? = null,
     val clearAssignee: Boolean = false,
+    val estimate: Int? = null,
+    val clearEstimate: Boolean = false,
 )
 
 /**
@@ -89,6 +96,8 @@ class LinearClient(
     private val teamCache = TtlCache<List<TeamSummary>>()
     private val projectCache = TtlCache<List<ProjectSummary>>()
     private val labelCache = TtlCache<List<LabelSummary>>()
+    private val stateCache = TtlCache<List<StateSummary>>()
+    private val organizationCache = TtlCache<String>()
 
     // ---- reference data -----------------------------------------------------------------
 
@@ -162,11 +171,28 @@ class LinearClient(
                 name = project.name,
                 state = project.state,
                 teams = project.teams?.nodes?.mapNotNull { it.key }.orEmpty(),
+                url = project.url,
             )
         }.sortedBy { it.name }
 
     /** Every label with its owning team, for the filter bar. */
     suspend fun getLabelSummaries(): List<LabelSummary> = getLabels().sortedBy { it.name }
+
+    /** One team's workflow states, in workflow order. Cached for five minutes. */
+    suspend fun getStates(teamId: String): List<StateSummary> = stateCache.get(teamId) {
+        execute(
+            WORKFLOW_STATES_BY_TEAM_QUERY,
+            buildJsonObject { put("teamId", teamId) },
+            WorkflowStatesData.serializer(),
+        ).workflowStates.nodes
+            .map { StateSummary(id = it.id, name = it.name, type = workflowStateTypeOf(it.type), position = it.position) }
+            .sortedBy { it.position }
+    }
+
+    /** The workspace's URL slug, e.g. `acme` in `linear.app/acme/...`. Cached for five minutes. */
+    suspend fun getWorkspaceUrlKey(): String = organizationCache.get("") {
+        execute(ORGANIZATION_QUERY, emptyVariables(), OrganizationData.serializer()).organization.urlKey
+    }
 
     // ---- issues -------------------------------------------------------------------------
 
@@ -238,10 +264,17 @@ class LinearClient(
             update.priority?.let { put("priority", it) }
             update.stateId?.let { put("stateId", it) }
             update.labelIds?.let { put("labelIds", JsonArray(it.map(::JsonPrimitive))) }
-            update.projectId?.let { put("projectId", it) }
+            when {
+                update.clearProject -> put("projectId", JsonNull)
+                update.projectId != null -> put("projectId", update.projectId)
+            }
             when {
                 update.clearAssignee -> put("assigneeId", JsonNull)
                 update.assigneeId != null -> put("assigneeId", update.assigneeId)
+            }
+            when {
+                update.clearEstimate -> put("estimate", JsonNull)
+                update.estimate != null -> put("estimate", update.estimate)
             }
         }
         if (input.isEmpty()) return
@@ -258,6 +291,36 @@ class LinearClient(
         issueRef,
         if (userId == null) IssueUpdate(clearAssignee = true) else IssueUpdate(assigneeId = userId),
     )
+
+    /** Moves an issue to a different workflow state. */
+    suspend fun setState(issueRef: String, stateId: String) =
+        updateIssue(issueRef, IssueUpdate(stateId = stateId))
+
+    /** Changes an issue's priority. */
+    suspend fun setPriority(issueRef: String, priority: Int) =
+        updateIssue(issueRef, IssueUpdate(priority = priority))
+
+    /** Sets an issue's estimate, or clears it when `estimate` is null. */
+    suspend fun setEstimate(issueRef: String, estimate: Int?) = updateIssue(
+        issueRef,
+        if (estimate == null) IssueUpdate(clearEstimate = true) else IssueUpdate(estimate = estimate),
+    )
+
+    /** Removes an issue from its project. */
+    suspend fun removeFromProject(issueRef: String) = updateIssue(issueRef, IssueUpdate(clearProject = true))
+
+    /**
+     * Links `url` to an issue. Linear recognizes a GitHub pull request URL on its own and creates
+     * a rich attachment for it, so no GitHub call is needed here.
+     */
+    suspend fun attachPrUrl(issueRef: String, url: String) {
+        val payload = execute(
+            ATTACH_URL_MUTATION,
+            buildJsonObject { put("issueId", resolveIssueUuid(issueRef)); put("url", url) },
+            AttachmentLinkData.serializer(),
+        ).attachmentLinkURL
+        if (!payload.success) throw ApiError("Linear refused to attach $url to $issueRef.")
+    }
 
     /** Resolves an identifier such as `ENG-123`, or a UUID, to the issue UUID. */
     suspend fun resolveIssueUuid(issueRef: String): String {

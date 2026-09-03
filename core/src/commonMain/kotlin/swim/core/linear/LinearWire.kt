@@ -120,6 +120,7 @@ internal data class ProjectWire(
     val name: String = "",
     val state: String = "",
     val teams: Nodes<KeyWire>? = null,
+    val url: String = "",
 )
 
 @Serializable
@@ -127,6 +128,23 @@ internal data class ProjectsData(val projects: Nodes<ProjectWire>)
 
 @Serializable
 internal data class ProjectPageData(val projects: Connection<ProjectWire>)
+
+@Serializable
+internal data class WorkflowStateWire(
+    val id: String = "",
+    val name: String = "",
+    val type: String = "",
+    val position: Double = 0.0,
+)
+
+@Serializable
+internal data class WorkflowStatesData(val workflowStates: Nodes<WorkflowStateWire>)
+
+@Serializable
+internal data class OrganizationWire(val urlKey: String = "")
+
+@Serializable
+internal data class OrganizationData(val organization: OrganizationWire)
 
 @Serializable
 internal data class LabelWire(
@@ -162,6 +180,9 @@ internal data class RelationDeleteData(val issueRelationDelete: SuccessPayload)
 
 @Serializable
 internal data class IssueUpdateData(val issueUpdate: SuccessPayload)
+
+@Serializable
+internal data class AttachmentLinkData(val attachmentLinkURL: SuccessPayload)
 
 /**
  * Linear's GitHub integration stores linked pull requests as issue attachments, so no GitHub

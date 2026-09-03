@@ -7,6 +7,7 @@ import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
 import swim.core.Canned
 import swim.core.HttpRecorder
+import swim.core.model.ApiError
 import swim.core.model.FilterOptions
 import swim.core.model.RateLimitedError
 import swim.core.model.RelationType
@@ -53,6 +54,9 @@ private fun client(vararg responses: Canned): Pair<LinearClient, HttpRecorder> {
     val recorder = HttpRecorder(responses.toList())
     return LinearClient(recorder.client, apiKeyAuth("lin_api_key")) to recorder
 }
+
+private const val ISSUE_ID = """{"data":{"issues":{"nodes":[{"id":"u1","identifier":"ENG-1"}]}}}"""
+private const val UPDATE_OK = """{"data":{"issueUpdate":{"success":true}}}"""
 
 class LinearClientTest {
     @Test
@@ -190,5 +194,92 @@ class LinearClientTest {
         assertEquals("Engineering", linear.getTeams().single().name)
         assertEquals("t1", linear.getTeamByName("eng")?.id)
         assertEquals(1, recorder.requests.size)
+    }
+
+    @Test
+    fun statesAreFetchedOnceAndThenCachedPerTeam() = runTest {
+        val states = """{"data":{"workflowStates":{"nodes":[
+          {"id":"s2","name":"In Progress","type":"started","position":2},
+          {"id":"s1","name":"Todo","type":"unstarted","position":1}]}}}"""
+        val (linear, recorder) = client(Canned(states))
+
+        val result = linear.getStates("team-1")
+
+        assertEquals(listOf("Todo", "In Progress"), result.map { it.name }, "states come back in workflow order")
+        assertEquals(WorkflowStateType.UNSTARTED, result.first().type)
+        assertContains(recorder.bodies[0], "\"teamId\":\"team-1\"")
+
+        linear.getStates("team-1")
+        assertEquals(1, recorder.requests.size)
+    }
+
+    @Test
+    fun explicitNullFieldsClearWhileAbsentFieldsAreOmitted() = runTest {
+        val (linear, recorder) = client(
+            Canned(ISSUE_ID), Canned(UPDATE_OK),
+            Canned(ISSUE_ID), Canned(UPDATE_OK),
+            Canned(ISSUE_ID), Canned(UPDATE_OK),
+            Canned(ISSUE_ID), Canned(UPDATE_OK),
+        )
+
+        linear.updateIssue("ENG-1", IssueUpdate(priority = 1))
+        assertTrue("estimate" !in recorder.bodies[1] && "projectId" !in recorder.bodies[1])
+
+        linear.updateIssue("ENG-1", IssueUpdate(estimate = 5))
+        assertContains(recorder.bodies[3], "\"estimate\":5")
+
+        linear.updateIssue("ENG-1", IssueUpdate(clearEstimate = true))
+        assertContains(recorder.bodies[5], "\"estimate\":null")
+
+        linear.updateIssue("ENG-1", IssueUpdate(clearProject = true))
+        assertContains(recorder.bodies[7], "\"projectId\":null")
+    }
+
+    @Test
+    fun attachPrUrlResolvesTheIdentifierAndSendsTheUrl() = runTest {
+        val (linear, recorder) = client(
+            Canned(ISSUE_ID),
+            Canned("""{"data":{"attachmentLinkURL":{"success":true}}}"""),
+        )
+
+        linear.attachPrUrl("ENG-1", "https://github.com/acme/app/pull/9")
+
+        assertContains(recorder.bodies[1], "\"issueId\":\"u1\"")
+        assertContains(recorder.bodies[1], "\"url\":\"https://github.com/acme/app/pull/9\"")
+    }
+
+    @Test
+    fun aRefusedAttachThrows() = runTest {
+        val (linear, _) = client(
+            Canned(ISSUE_ID),
+            Canned("""{"data":{"attachmentLinkURL":{"success":false}}}"""),
+        )
+
+        assertFailsWith<ApiError> { linear.attachPrUrl("ENG-1", "https://github.com/acme/app/pull/9") }
+    }
+
+    @Test
+    fun projectSummariesCarryTheirLinearUrl() = runTest {
+        val page = """{"data":{"projects":{"nodes":[
+          {"id":"p1","name":"Core","state":"started","url":"https://linear.app/acme/project/core-abc",
+           "teams":{"nodes":[{"key":"ENG"}]}}],
+          "pageInfo":{"hasNextPage":false,"endCursor":null}}}}"""
+        val (linear, _) = client(Canned(page))
+
+        assertEquals("https://linear.app/acme/project/core-abc", linear.getProjectSummaries().single().url)
+    }
+
+    @Test
+    fun theWorkspaceUrlKeyIsFetchedOnceAndThenCached() = runTest {
+        val (linear, recorder) = client(Canned("""{"data":{"organization":{"urlKey":"acme"}}}"""))
+
+        assertEquals("acme", linear.getWorkspaceUrlKey())
+        assertEquals("acme", linear.getWorkspaceUrlKey())
+        assertEquals(1, recorder.requests.size)
+    }
+
+    @Test
+    fun teamUrlBuildsTheLinearTeamPage() {
+        assertEquals("https://linear.app/acme/team/ENG", teamUrl("acme", "ENG"))
     }
 }

@@ -6,13 +6,26 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class TeamSummary(val id: String, val key: String, val name: String)
 
-/** A project. `teams` is empty unless the summary came from `getProjectSummaries`. */
+/**
+ * A project. `teams` is empty unless the summary came from `getProjectSummaries`, which is also
+ * the only source that fills in `url`, the project's Linear page.
+ */
 @Serializable
 data class ProjectSummary(
     val id: String,
     val name: String,
     val state: String,
     val teams: List<String> = emptyList(),
+    val url: String = "",
+)
+
+/** A team's workflow state (issue status), for the "change status" submenu. */
+@Serializable
+data class StateSummary(
+    val id: String,
+    val name: String,
+    val type: WorkflowStateType,
+    val position: Double,
 )
 
 /** A label. `team` is null for workspace labels. */
