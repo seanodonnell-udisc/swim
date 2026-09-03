@@ -70,6 +70,25 @@ private fun randomCase(seed: Int): Case {
     return Case("random $seed", nodes, edges)
 }
 
+/**
+ * Every blocks route leaves the bottom of its blocker and runs down into the top of what it
+ * blocks. An upward last stretch would draw an arrowhead that says the opposite of the relation.
+ */
+private fun lastSegmentPointsDown(shape: Case, result: LayoutResult) {
+    val boxes = boxesOf(shape.nodes, result.positions).associateBy { it.id }
+    for ((edge, route) in result.routes) {
+        if (edge.kind != LayoutEdgeKind.BLOCKS) continue
+        val from = boxes.getValue(edge.from)
+        val to = boxes.getValue(edge.to)
+        val name = "${shape.name}: ${edge.from} blocks ${edge.to}"
+        assertEquals(from.bottom, route.first().y, 0.001f, "$name must leave the blocker's bottom")
+        assertEquals(to.top, route.last().y, 0.001f, "$name must meet the top of what it blocks")
+        val last = route[route.lastIndex - 1]
+        assertEquals(route.last().x, last.x, 0.001f, "$name must arrive on a vertical stretch")
+        assertTrue(last.y < route.last().y, "$name must arrive heading down, not up")
+    }
+}
+
 /** The edges that enter a card, drawn the way [routes] says to draw them. */
 private fun crossings(shape: Case, result: LayoutResult, routes: Map<LayoutEdge, List<Position>>): Int {
     val cards = boxesOf(shape.nodes, result.positions)
@@ -113,6 +132,7 @@ class RouteTest {
             routed += result.routes.size
             val left = crossings(shape, result, result.routes)
             assertEquals(0, left, "${shape.name}: $left edges still cross a card")
+            lastSegmentPointsDown(shape, result)
             after += left
         }
         println("200 random graphs: $routed routed, $before crossing before, $after after")
@@ -145,6 +165,27 @@ class RouteTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun everyBlocksRouteRunsDownIntoWhatItBlocks() {
+        for (shape in cases) lastSegmentPointsDown(shape, layout(shape.nodes, shape.edges))
+    }
+
+    @Test
+    fun aBlockerBelowWhatItBlocksComesBackDownFromAbove() {
+        // The cycle's back edge: C blocks A, and A is two rows above C.
+        val result = layout(cycle.nodes, cycle.edges)
+        val back = result.cycleEdges.single()
+        val route = result.routes.getValue(back)
+        val boxes = boxesOf(cycle.nodes, result.positions).associateBy { it.id }
+        val to = boxes.getValue(back.to)
+        assertTrue(
+            boxes.getValue(back.from).top > to.bottom,
+            "the fixture must place the blocker below what it blocks",
+        )
+        assertTrue(route.any { it.y < to.top }, "the route must reach above the card it meets")
+        lastSegmentPointsDown(cycle, result)
     }
 
     @Test

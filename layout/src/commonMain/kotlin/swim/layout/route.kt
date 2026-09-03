@@ -19,8 +19,12 @@ private const val PLAIN_REACH: Float = 20f
  *   the source card's edge, the last is on the target card's edge, and every stretch between
  *   them is horizontal or vertical. Feed the whole list to the smooth-step path builder, which
  *   rounds the corners of any orthogonal polyline, and take the arrowhead direction from the
- *   last two points. Do not re-derive the ends: a routed edge may leave the top of its card and
- *   meet the bottom of the other one, which the plain anchors never do.
+ *   last two points.
+ * - A **blocks** route always leaves the bottom of its blocker and always arrives at the top of
+ *   what it blocks, with the last stretch running down the page. A blocker placed below what it
+ *   blocks goes round through the lanes and comes back down onto the card. The arrowhead off the
+ *   last two points therefore always points down, as the plain blocks edge does today.
+ * - Every other kind may meet a card on any side, so do not re-derive its ends from the cards.
  * - An edge **without** an entry is drawn the way it is drawn today. Nothing stands in its way.
  * - The key is the [LayoutEdge] the caller passed in. An edge kind the layout does not model,
  *   `duplicate` for one, routes as [LayoutEdgeKind.RELATED]; two relations between the same pair
@@ -55,7 +59,7 @@ fun routeEdges(
         if (from.id == to.id) continue
         val ends = setOf(from.id, to.id)
         if (plainPaths(from, to, edge.kind).none { it.crossesACard(grown, ends) }) continue
-        val (start, end) = anchorsBetween(from, to)
+        val (start, end) = anchorsBetween(from, to, edge.kind)
         val route = searchRoute(
             corridors = corridors.withLane(start.point.x, grown).withLane(end.point.x, grown),
             start = start,
@@ -136,13 +140,21 @@ private fun plainEnds(from: Box, to: Box, kind: LayoutEdgeKind): Pair<PlainEnd, 
 }
 
 /**
- * The two ends of a route. It leaves the bottom of the card above and meets the top of the card
- * below, so it reads as the plain edge does. Two cards on one row are joined underneath, which
- * is the only way round that crosses nothing.
+ * The two ends of a route.
+ *
+ * A blocks edge always leaves the bottom of its blocker and always meets the top of what it
+ * blocks, heading down, whatever the two cards sit. A blocker that ended up below what it blocks
+ * swings out through the lanes and comes back down onto the card from above. This is the reading
+ * the whole app is built on: down the page is "and then", and an arrow that points up says the
+ * opposite of what the relation means.
+ *
+ * Every other kind takes the near side: the bottom of the card above and the top of the card
+ * below, or underneath when the two share a row.
  */
-private fun anchorsBetween(from: Box, to: Box): Pair<Anchor, Anchor> = when {
-    to.top >= from.bottom -> Anchor(Position(from.centreX, from.bottom), below = true) to
-        Anchor(Position(to.centreX, to.top), below = false)
+private fun anchorsBetween(from: Box, to: Box, kind: LayoutEdgeKind): Pair<Anchor, Anchor> = when {
+    kind == LayoutEdgeKind.BLOCKS || to.top >= from.bottom ->
+        Anchor(Position(from.centreX, from.bottom), below = true) to
+            Anchor(Position(to.centreX, to.top), below = false)
 
     to.bottom <= from.top -> Anchor(Position(from.centreX, from.top), below = false) to
         Anchor(Position(to.centreX, to.bottom), below = true)
