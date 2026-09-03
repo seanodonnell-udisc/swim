@@ -179,12 +179,16 @@ fun GraphCanvas(
     // produced: a saved layout, a re-layout and every drop have all moved cards since. A drag in
     // flight is not in `positions`, so the search runs at a drop and not once a frame. It is a
     // shortest path per crossing edge over a lane grid, which is worth keeping off this thread.
-    var routes by remember { mutableStateOf<Map<EdgeKey, List<Position>>>(emptyMap()) }
     LaunchedEffect(drawn, positions) {
-        routes = withContext(Dispatchers.Default) { routesByEdge(drawn, positions) }
+        val found = withContext(Dispatchers.Default) { routesByEdge(drawn, positions) }
+        state.routing = Routing(found, positions)
     }
 
     val rects = buildRects(positions, ids, stackOf, state.stackFront, state.dragIds, state.dragDelta)
+    // A route only describes the positions it was found for. Everything that has moved since
+    // falls back to the plain direct line, which is built from the live rects and so follows the
+    // pointer. Read here, per frame, because a drag recomposes through `dragDelta`.
+    val routes = state.routing.live(stackOf, positions, state.dragIds, state.dragDelta)
     // Both gestures outlive the composition that started them, so they read the current lambda
     // rather than closing over this frame's rects and selection. See the note in IssueCard.
     val onMenu = rememberUpdatedState<(Offset) -> Unit> { at ->

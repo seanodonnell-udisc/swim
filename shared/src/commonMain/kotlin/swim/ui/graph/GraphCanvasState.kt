@@ -11,6 +11,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import swim.core.model.RelationType
+import swim.layout.Position
 import kotlin.math.min
 
 /** The chooser the canvas has open, if any. Both anchor at a point in screen pixels. */
@@ -38,6 +39,48 @@ internal data class PrPanel(val url: String, val title: String, val at: Offset)
 
 /** A short note over the canvas. [id] rises every time, so the same text can be said twice. */
 internal data class CanvasToast(val text: String, val id: Int)
+
+/**
+ * The waypoint routes the layout found, and the positions they were found for.
+ *
+ * The second half is what stops a connector freezing. A route is a fixed polyline through the
+ * gaps between the cards, so it is only true of the placement it was searched against. The search
+ * runs off the main thread and only when [at] changes, which a drag in flight does not do, so
+ * drawing a route while its card is moving pins that connector in place while every plain edge
+ * follows the pointer. [live] answers with only the routes that still describe where the cards
+ * are; everything else draws its plain direct line, which is built from the moving rects.
+ */
+internal data class Routing(
+    val byEdge: Map<EdgeKey, List<Position>> = emptyMap(),
+    val at: Map<String, Position> = emptyMap(),
+) {
+    /**
+     * The routes still worth drawing, against the positions on screen right now. A drag in
+     * flight is in [dragIds] and [dragDelta]; an area-label drag has already written itself into
+     * [positions]. Either way a moved card drops its edges back to the direct line, and they stay
+     * there until the new routes arrive, so nothing snaps through a stale shape on the way.
+     */
+    fun live(
+        stackOf: Map<String, Set<String>>,
+        positions: Map<String, Position>,
+        dragIds: Set<String>,
+        dragDelta: Offset,
+    ): Map<EdgeKey, List<Position>> {
+        if (byEdge.isEmpty()) return emptyMap()
+
+        fun settled(id: String): Boolean {
+            val slot = slotOf(id, stackOf)
+            val now = positions[slot] ?: return false
+            val moved = if (slot in dragIds) {
+                Position(now.x + dragDelta.x, now.y + dragDelta.y)
+            } else {
+                now
+            }
+            return at[slot] == moved
+        }
+        return byEdge.filterKeys { settled(it.from) && settled(it.to) }
+    }
+}
 
 /**
  * What a plain left drag does. Arrange moves cards, draws a selection box, and draws relations
@@ -76,6 +119,9 @@ class GraphCanvasState internal constructor() {
     internal var panel by mutableStateOf<CanvasPanel?>(null)
     internal var menu by mutableStateOf<CanvasMenu?>(null)
     internal var prPanel by mutableStateOf<PrPanel?>(null)
+
+    /** The waypoint routes and the placement they were found for. See [Routing]. */
+    internal var routing by mutableStateOf(Routing())
 
     /** The issue the "Link a PR by URL" input is open for, if any. */
     internal var prUrlFor by mutableStateOf<String?>(null)

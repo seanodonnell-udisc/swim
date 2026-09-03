@@ -300,6 +300,58 @@ class GraphCanvasLogicTest {
         assertNull(hitEdge(GraphCanvasPreview.graph, rects, onDetour, 8f))
     }
 
+    /**
+     * The freeze this pins: a route is a fixed polyline, so drawing one while its card is moving
+     * pinned that connector in place while every plain edge followed the pointer.
+     */
+    @Test
+    fun aRouteIsDroppedAsSoonAsEitherOfItsCardsMoves() {
+        val key = EdgeKey("ENG-101", "ENG-103", RelationType.BLOCKS)
+        val other = EdgeKey("ENG-102", "ENG-105", RelationType.BLOCKS)
+        val positions = GraphCanvasPreview.positions
+        val routing = Routing(
+            byEdge = mapOf(key to listOf(Position(0f, 0f)), other to listOf(Position(1f, 1f))),
+            at = positions,
+        )
+        val settled = emptySet<String>()
+
+        // Nothing moving: both routes stand.
+        assertEquals(
+            setOf(key, other),
+            routing.live(emptyMap(), positions, settled, Offset.Zero).keys,
+        )
+
+        // ENG-101 under the pointer: its edge falls back, the untouched one keeps its lanes.
+        assertEquals(
+            setOf(other),
+            routing.live(emptyMap(), positions, setOf("ENG-101"), Offset(30f, 10f)).keys,
+        )
+
+        // A drag of zero has not moved anything yet, so nothing is dropped.
+        assertEquals(
+            setOf(key, other),
+            routing.live(emptyMap(), positions, setOf("ENG-101"), Offset.Zero).keys,
+        )
+
+        // An area-label drag writes straight into the positions map instead, and is caught too.
+        val shifted = positions + ("ENG-103" to Position(11f, 22f))
+        assertEquals(
+            setOf(other),
+            routing.live(emptyMap(), shifted, settled, Offset.Zero).keys,
+        )
+
+        // And a pile: the members' edges route through the slot the whole pile occupies.
+        val piled = Routing(
+            byEdge = mapOf(EdgeKey("ENG-111", "ENG-101", RelationType.BLOCKS) to listOf(Position(0f, 0f))),
+            at = positions,
+        )
+        val stackOf = stackIndex(visibleStacks(GraphCanvasPreview.graph))
+        assertTrue(
+            piled.live(stackOf, positions, setOf("${STACK_PREFIX}ENG-111"), Offset(5f, 0f)).isEmpty(),
+            "a pile drag kept a stale route on one of its members",
+        )
+    }
+
     @Test
     fun anEdgeWithNoRouteIsDrawnExactlyAsBefore() {
         val rects = GraphCanvasPreview.positions.mapValues { (_, position) -> nodeRect(position) }

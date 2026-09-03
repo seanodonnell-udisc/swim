@@ -608,6 +608,82 @@ class CanvasInteractionTest {
         assertEquals("ENG-101", state.prUrlFor, "the input did not open")
     }
 
+    /**
+     * The connector freeze: a routed edge kept its stale polyline for the whole drag while the
+     * plain ones followed the pointer. Mid-drag it must fall back to the direct line, which is
+     * built from the moving rect, and on the drop it must take a fresh route.
+     */
+    @Test
+    fun aRoutedEdgeFollowsTheDragAndReRoutesOnTheDrop() {
+        val routed = awaitRoutes()
+        val edge = routed.keys.first()
+        val before = state.routing.at
+
+        // Take hold of the source card and travel, without letting go.
+        val from = cardCentre(edge.from)
+        move(from)
+        scene.sendPointerEvent(
+            PointerEventType.Press, from,
+            button = PointerButton.Primary,
+            buttons = PointerButtons(isPrimaryPressed = true),
+        )
+        listOf(0.3f, 0.7f, 1f).forEach { fraction ->
+            scene.sendPointerEvent(
+                PointerEventType.Move, from + Offset(120f, 90f) * fraction,
+                buttons = PointerButtons(isPrimaryPressed = true),
+            )
+            scene.render()
+        }
+
+        // Mid-drag: the card is moving, so its edge draws direct and tracks the pointer.
+        val live = state.routing.live(
+            stackIndex(visibleStacks(GraphCanvasPreview.graph)),
+            positions,
+            state.dragIds,
+            state.dragDelta,
+        )
+        assertTrue(state.dragDelta != Offset.Zero, "the drag reported no travel")
+        assertTrue(
+            edge !in live,
+            "the dragged card's edge kept its stale route and froze: $edge",
+        )
+        // The routes themselves have not been searched again yet, which is the point: the direct
+        // fallback carries the drag, and the stale set is still sitting there untouched.
+        assertEquals(before, state.routing.at, "the routes were re-searched mid-drag")
+
+        scene.sendPointerEvent(
+            PointerEventType.Release, from + Offset(120f, 90f),
+            button = PointerButton.Primary,
+            buttons = PointerButtons(),
+        )
+        scene.render()
+
+        // On the drop the positions moved, so a fresh search runs and the lanes come back.
+        val after = awaitRoutes()
+        assertTrue(after.isNotEmpty(), "nothing was routed after the drop")
+        assertEquals(
+            positions,
+            state.routing.at,
+            "the new routes do not describe where the cards now are",
+        )
+        assertTrue(
+            state.routing.live(emptyMap(), positions, emptySet(), Offset.Zero).isNotEmpty(),
+            "every route was still stale after the drop settled",
+        )
+    }
+
+    /** Renders until the off-thread route search has landed, and returns what it found. */
+    private fun awaitRoutes(): Map<EdgeKey, List<Position>> {
+        repeat(20) {
+            if (state.routing.byEdge.isNotEmpty() && state.routing.at == positions) {
+                return state.routing.byEdge
+            }
+            Thread.sleep(25)
+            scene.render()
+        }
+        error("the route search never landed: ${state.routing.at.size} positions")
+    }
+
     // -- PR-derived edges and stacked cards -----------------------------------------------------
 
     @Test
