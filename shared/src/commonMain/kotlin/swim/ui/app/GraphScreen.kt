@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -40,13 +39,19 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.drawText
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,6 +62,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import swim.core.auth.LinearAuthMode
+import swim.core.linear.teamUrl
 import swim.core.model.IssueEdge
 import swim.core.model.PRIORITY_LABELS
 import swim.core.model.RelationType
@@ -68,6 +74,7 @@ import swim.core.session.GraphState
 import swim.core.session.PR_STATUS_TTL
 import swim.core.session.RelationChange
 import swim.core.session.reconcile
+import swim.core.session.resolveGrouping
 import swim.core.url.resolveLinearUrl
 import swim.layout.LayoutEdge
 import swim.layout.LayoutEdgeKind
@@ -75,10 +82,11 @@ import swim.layout.Position
 import swim.layout.PositionSnapshot
 import swim.layout.relayoutDescendants
 import swim.ui.auth.GithubCard
-import swim.ui.filters.FilterToolbar
+import swim.ui.filters.FiltersDialog
 import swim.ui.filters.LinearUrlInput
 import swim.ui.filters.ReferenceData
 import swim.ui.filters.availablesOf
+import swim.ui.filters.loadButtonLabel
 import swim.ui.graph.CanvasMode
 import swim.ui.graph.EdgeKey
 import swim.ui.graph.GraphCanvas
@@ -90,8 +98,9 @@ import swim.ui.graph.layoutNodesOf
 import swim.ui.graph.rememberGraphCanvasState
 import swim.ui.graph.slotOf
 import swim.ui.graph.stackIndex
+import swim.ui.graph.areaColor
+import swim.ui.graph.AREA_STROKE
 import swim.ui.graph.visibleStacks
-import swim.ui.theme.SwimDimens
 
 /** Set once the shortcuts overlay has been shown, so it only greets a new install. */
 private const val SEEN_SHORTCUTS = "swim.seenShortcuts"
@@ -172,12 +181,20 @@ internal fun GraphScreen(
     var relayouts by remember { mutableStateOf(0) }
     var showCrossLinks by remember { mutableStateOf(false) }
     var areaDrag by remember { mutableStateOf(Offset.Zero) }
+    var panelCollapsed by remember { mutableStateOf(false) }
+    var filtersOpen by remember { mutableStateOf(false) }
     val canvasState = rememberGraphCanvasState()
 
-    // Milestone areas hide their crossings until the view toolbar asks for them.
-    val drawn = remember(projected, filterState.groupBy, showCrossLinks) {
-        if (filterState.groupBy != GraphGrouping.MILESTONE || showCrossLinks) projected
-        else withoutCrossGroupEdges(projected, filterState.groupBy)
+    // The one place AUTO becomes a real grouping. Everything below reads `grouping`, never the
+    // stored choice, so a milestone project groups itself and a flat query stays flat.
+    val grouping = remember(filterState.groupBy, projected) {
+        resolveGrouping(filterState.groupBy, projected.nodes)
+    }
+
+    // Milestone areas hide their crossings until the view controls ask for them.
+    val drawn = remember(projected, grouping, showCrossLinks) {
+        if (grouping != GraphGrouping.MILESTONE || showCrossLinks) projected
+        else withoutCrossGroupEdges(projected, grouping)
     }
 
     val availables = remember(reference, filterState.filters) {
@@ -191,6 +208,9 @@ internal fun GraphScreen(
                 projects = holder.client.getProjectSummaries(),
                 labels = holder.client.getLabelSummaries(),
                 users = holder.client.getUsers(),
+                // Every team quick link needs the workspace slug, and the client caches it, so
+                // it is fetched once here with the rest of the reference data.
+                urlKey = runCatching { holder.client.getWorkspaceUrlKey() }.getOrDefault(""),
             )
         } catch (e: CancellationException) {
             throw e
@@ -265,13 +285,13 @@ internal fun GraphScreen(
     }
 
     var placedRelayouts by remember { mutableStateOf(0) }
-    LaunchedEffect(projected, filterState.groupBy, relayouts) {
+    LaunchedEffect(projected, grouping, relayouts) {
         val key = holder.session.layoutCacheKey()
         val relayout = relayouts != placedRelayouts
         placedRelayouts = relayouts
         val snapshot = holder.positions.get()
         val next = withContext(Dispatchers.Default) {
-            placeGraph(projected, filterState.groupBy, key, snapshot, relayout = relayout)
+            placeGraph(projected, grouping, key, snapshot, relayout = relayout)
         }
         // A drag that landed while the layout ran wrote to the same key. It is the newer intent,
         // so it wins over the positions this pass computed from the pre-drag snapshot.
@@ -285,7 +305,7 @@ internal fun GraphScreen(
             next
         } else {
             val positions = next.positions + dragged
-            next.copy(positions = positions, groups = groupBoxesOf(projected, filterState.groupBy, positions))
+            next.copy(positions = positions, groups = groupBoxesOf(projected, grouping, positions))
         }
     }
 
@@ -295,7 +315,7 @@ internal fun GraphScreen(
         val settled = tuck ?: return@LaunchedEffect
         slideTo(placement.positions, settled) { frame ->
             placement = placement.copy(positions = frame)
-                .let { it.copy(groups = groupBoxesOf(projected, filterState.groupBy, frame)) }
+                .let { it.copy(groups = groupBoxesOf(projected, grouping, frame)) }
         }
         holder.session.savePositions(settled)
         tuck = null
@@ -376,70 +396,153 @@ internal fun GraphScreen(
         tuck = settled
     }
 
-    Column(Modifier.fillMaxSize().background(Swim.Bg)) {
-        FilterToolbar(
-            state = filterState,
-            availables = availables,
-            store = holder.filters,
-            loaded = graphState is GraphState.Loaded,
-            loading = graphState is GraphState.Loading,
-            onLoad = {
-                if (filterState.shouldLoadIssues) holder.session.reload() else holder.filters.applyFilters()
+    /** One confirm for a whole selection, rather than one dialog per issue. */
+    fun assignAll(ids: Set<String>, userId: String?) {
+        val who = reference.users.firstOrNull { it.id == userId }?.name ?: "nobody"
+        val what = if (ids.size == 1) ids.first() else "${ids.size} issues"
+        mutate("This assigns $what to $who in Linear.", "Assign") {
+            ids.forEach { holder.session.setAssignee(it, userId) }
+        }
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Swim.Bg)
+            // An ancestor sees the key before the focused canvas does, so the panel toggle works
+            // wherever the focus happens to be.
+            .onPreviewKeyEvent { event ->
+                if (!isPanelToggle(event)) return@onPreviewKeyEvent false
+                panelCollapsed = !panelCollapsed
+                true
             },
-        ) {
-            OverflowMenu(
-                githubConnected = status.githubConfigured,
-                onRelayout = {
-                    relayouts++
+    ) {
+        SidePanel(collapsed = panelCollapsed, onToggle = { panelCollapsed = !panelCollapsed }) {
+            SelectionSection(
+                selection = selection,
+                nodes = projected.nodes,
+                users = reference.users,
+                onOpenIssue = { id ->
+                    projected.nodes.firstOrNull { it.identifier == id }?.url?.let(env.openUrl)
                 },
-                onConnectGithub = { githubDialog = true },
-                onSignOut = {
+                onCopyId = env.copyToClipboard,
+                onAssign = ::assignAll,
+                onRemoveFromProject = { id ->
+                    mutate("This removes $id from its project in Linear.", "Remove") {
+                        holder.session.removeFromProject(id)
+                    }
+                },
+                onClear = { selection = emptySet() },
+            )
+
+            PanelSection("Query") {
+                LinearUrlInput(
+                    resolving = urlResolving,
+                    error = urlError,
+                    onSubmit = { url ->
+                        urlError = null
+                        urlResolving = true
+                        scope.launch {
+                            try {
+                                holder.filters.applyFromUrl(resolveLinearUrl(url, holder.client))
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: SwimError) {
+                                urlError = e.message
+                            } finally {
+                                urlResolving = false
+                            }
+                        }
+                    },
+                )
+                filterState.urlSource?.let {
+                    FilterSummaryChip("From: $it", holder.filters::dismissUrlSource)
+                }
+                SwimButton(
+                    text = "Filters…",
+                    onClick = { filtersOpen = true },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                activeFilters(filterState.filters).forEach { chip ->
+                    key(chip.field, chip.value) {
+                        FilterSummaryChip(
+                            text = chip.text,
+                            onDismiss = { clearFilter(holder.filters, chip) },
+                            onOpen = quickLink(chip, reference)?.let { url ->
+                                { env.openUrl(url) }
+                            },
+                        )
+                    }
+                }
+                SwimButton(
+                    text = loadButtonLabel(
+                        loaded = graphState is GraphState.Loaded,
+                        armed = !filterState.shouldLoadIssues,
+                    ),
+                    onClick = {
+                        if (filterState.shouldLoadIssues) {
+                            holder.session.reload()
+                        } else {
+                            holder.filters.applyFilters()
+                        }
+                    },
+                    primary = true,
+                    enabled = graphState !is GraphState.Loading,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            PanelSection("View") {
+                SwimSelect(
+                    label = "Group",
+                    selected = filterState.groupBy.name.lowercase(),
+                    options = GROUP_OPTIONS,
+                    onSelect = { value -> holder.filters.setGroupBy(groupingOfOption(value)) },
+                    width = PANEL_WIDTH - 20.dp,
+                    anyLabel = "None",
+                )
+                SwimCheckbox("Related edges", showRelated, holder.session::setShowRelatedEdges)
+                SwimCheckbox("Duplicates", showDuplicates, holder.session::setShowDuplicates)
+                // Without a GitHub token there are no pull requests to read. The box then offers
+                // the connect dialog, because a user who already had Linear never sees the card.
+                SwimCheckbox(
+                    label = "Derive relations from PRs",
+                    checked = derivePr && status.githubConfigured,
+                    onCheckedChange = holder.session::setDerivePrRelations,
+                    enabled = status.githubConfigured,
+                    hint = if (status.githubConfigured) null else "Click to connect GitHub",
+                    onDisabledClick = { githubDialog = true },
+                )
+                // Only milestone areas hide their crossings, so only that mode offers the switch.
+                if (grouping == GraphGrouping.MILESTONE) {
+                    SwimCheckbox("Cross-milestone links", showCrossLinks, { showCrossLinks = it })
+                }
+                Text(
+                    text = "${drawn.nodes.size} issues, ${drawn.edges.size} relations",
+                    color = Swim.TextMuted,
+                    fontSize = 10.sp,
+                )
+                // A PR chip with no badge otherwise reads as "no reviews and no checks".
+                if (prStatusFailed) {
+                    Text("PR status unavailable", color = Swim.Amber, fontSize = 10.sp)
+                }
+            }
+
+            PanelSection("App") {
+                PanelAction("Re-layout") { relayouts++ }
+                if (!status.githubConfigured) {
+                    PanelAction("Connect GitHub…") { githubDialog = true }
+                }
+                PanelAction("Sign out") {
                     scope.launch {
                         signOut(env, holder)
                         onAuthChanged()
                     }
-                },
-            )
-        }
-        Divider()
-
-        ViewToolbar(
-            counts = "${drawn.nodes.size} issues, ${drawn.edges.size} relations",
-            prStatusFailed = prStatusFailed,
-            groupBy = filterState.groupBy,
-            onGroupBy = holder.filters::setGroupBy,
-            showRelated = showRelated,
-            onShowRelated = holder.session::setShowRelatedEdges,
-            showDuplicates = showDuplicates,
-            onShowDuplicates = holder.session::setShowDuplicates,
-            derivePr = derivePr,
-            onDerivePr = holder.session::setDerivePrRelations,
-            githubConnected = status.githubConfigured,
-            onConnectGithub = { githubDialog = true },
-            showCrossLinks = showCrossLinks,
-            onShowCrossLinks = { showCrossLinks = it },
-            urlSource = filterState.urlSource,
-            onDismissUrlSource = holder.filters::dismissUrlSource,
-            urlResolving = urlResolving,
-            urlError = urlError,
-            onUrlSubmit = { url ->
-                urlError = null
-                urlResolving = true
-                scope.launch {
-                    try {
-                        holder.filters.applyFromUrl(resolveLinearUrl(url, holder.client))
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: SwimError) {
-                        urlError = e.message
-                    } finally {
-                        urlResolving = false
-                    }
                 }
-            },
-        )
-        Divider()
+            }
+        }
 
+        Column(Modifier.fillMaxSize()) {
         banner?.let { ErrorBanner(it, { banner = null }) }
 
         Box(Modifier.fillMaxSize()) {
@@ -542,7 +645,7 @@ internal fun GraphScreen(
                             val placed = placement.positions + moved
                             holder.session.savePositions(placed)
                             placement = placement.copy(positions = placed)
-                                .let { it.copy(groups = groupBoxesOf(projected, filterState.groupBy, placed)) }
+                                .let { it.copy(groups = groupBoxesOf(projected, grouping, placed)) }
                         },
                         onSelectionChange = { selection = it },
                         onSetState = { id, stateId, stateName ->
@@ -588,10 +691,10 @@ internal fun GraphScreen(
                             draggable = canvasState.mode == CanvasMode.ARRANGE,
                             onDrag = { label, delta ->
                                 areaDrag += delta
-                                val ids = idsIn(projected, filterState.groupBy, label)
+                                val ids = idsIn(projected, grouping, label)
                                 val moved = moveGroup(placement.positions, ids, delta)
                                 placement = placement.copy(positions = moved)
-                                    .let { it.copy(groups = groupBoxesOf(projected, filterState.groupBy, moved)) }
+                                    .let { it.copy(groups = groupBoxesOf(projected, grouping, moved)) }
                             },
                             onDragEnd = { label ->
                                 val stored = holder.positions.get()
@@ -611,6 +714,17 @@ internal fun GraphScreen(
                 )
             }
         }
+        }
+    }
+
+    if (filtersOpen) {
+        FiltersDialog(
+            filters = filterState.filters,
+            availables = availables,
+            store = holder.filters,
+            onApply = holder.filters::applyFilters,
+            onDismiss = { filtersOpen = false },
+        )
     }
 
     pending?.let { request ->
@@ -667,127 +781,44 @@ internal fun GraphScreen(
     }
 }
 
-/** Row two: how the graph is drawn, and where its filters came from. */
-@Composable
-private fun ViewToolbar(
-    counts: String,
-    prStatusFailed: Boolean,
-    groupBy: GraphGrouping,
-    onGroupBy: (GraphGrouping) -> Unit,
-    showRelated: Boolean,
-    onShowRelated: (Boolean) -> Unit,
-    showDuplicates: Boolean,
-    onShowDuplicates: (Boolean) -> Unit,
-    derivePr: Boolean,
-    onDerivePr: (Boolean) -> Unit,
-    githubConnected: Boolean,
-    onConnectGithub: () -> Unit,
-    showCrossLinks: Boolean,
-    onShowCrossLinks: (Boolean) -> Unit,
-    urlSource: String?,
-    onDismissUrlSource: () -> Unit,
-    urlResolving: Boolean,
-    urlError: String?,
-    onUrlSubmit: (String) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().height(SwimDimens.HeaderHeight).padding(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(SwimDimens.Gap),
-    ) {
-        LinearUrlInput(resolving = urlResolving, error = urlError, onSubmit = onUrlSubmit)
-        urlSource?.let { DismissibleChip("From: $it", onDismissUrlSource) }
-        Spacer(Modifier.weight(1f))
-        SwimSelect(
-            label = "Group",
-            selected = if (groupBy == GraphGrouping.NONE) null else groupBy.name.lowercase(),
-            options = listOf(
-                SwimOption("team", "Team"),
-                SwimOption("project", "Project"),
-                SwimOption("label", "Label"),
-                SwimOption("milestone", "Milestone"),
-            ),
-            onSelect = { value ->
-                onGroupBy(
-                    when (value) {
-                        "team" -> GraphGrouping.TEAM
-                        "project" -> GraphGrouping.PROJECT
-                        "label" -> GraphGrouping.LABEL
-                        "milestone" -> GraphGrouping.MILESTONE
-                        else -> GraphGrouping.NONE
-                    }
-                )
-            },
-            width = 130.dp,
-            anyLabel = "None",
-        )
-        SwimCheckbox("Related edges", showRelated, onShowRelated)
-        SwimCheckbox("Duplicates", showDuplicates, onShowDuplicates)
-        // Without a GitHub token there are no pull requests to read. The box then offers the
-        // connect dialog, because a user who already had Linear never sees the login card.
-        SwimCheckbox(
-            label = "Derive relations from PR stacks",
-            checked = derivePr && githubConnected,
-            onCheckedChange = onDerivePr,
-            enabled = githubConnected,
-            hint = if (githubConnected) null else "Click to connect GitHub",
-            onDisabledClick = onConnectGithub,
-        )
-        // Only milestone areas hide their crossings, so only that mode offers the switch.
-        if (groupBy == GraphGrouping.MILESTONE) {
-            SwimCheckbox("Cross-milestone links", showCrossLinks, onShowCrossLinks)
-        }
-        // A PR chip with no badge otherwise reads as "no reviews and no checks".
-        if (prStatusFailed) Text("PR status unavailable", color = Swim.Amber, fontSize = 11.sp)
-        Text(counts, color = Swim.TextMuted, fontSize = 11.sp)
-    }
+/**
+ * The group-by control. Auto is the default and a real entry, so the control can say it is on;
+ * the select's own clearing row is None, which is the other way to have no areas.
+ */
+private val GROUP_OPTIONS = listOf(
+    SwimOption("auto", "Auto"),
+    SwimOption("team", "Team"),
+    SwimOption("project", "Project"),
+    SwimOption("label", "Label"),
+    SwimOption("milestone", "Milestone"),
+)
+
+private fun groupingOfOption(value: String?): GraphGrouping = when (value) {
+    "auto" -> GraphGrouping.AUTO
+    "team" -> GraphGrouping.TEAM
+    "project" -> GraphGrouping.PROJECT
+    "label" -> GraphGrouping.LABEL
+    "milestone" -> GraphGrouping.MILESTONE
+    else -> GraphGrouping.NONE
 }
 
-/** The overflow menu: everything that is not a filter. */
-@Composable
-private fun OverflowMenu(
-    githubConnected: Boolean,
-    onRelayout: () -> Unit,
-    onConnectGithub: () -> Unit,
-    onSignOut: () -> Unit,
-) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        SwimButton("⋯", { open = true })
-        DropdownMenu(
-            expanded = open,
-            onDismissRequest = { open = false },
-            modifier = Modifier.background(Swim.Card),
-        ) {
-            MenuItem("Re-layout") {
-                open = false
-                onRelayout()
-            }
-            if (!githubConnected) {
-                MenuItem("Connect GitHub…") {
-                    open = false
-                    onConnectGithub()
-                }
-            }
-            MenuItem("Sign out") {
-                open = false
-                onSignOut()
-            }
-        }
-    }
-}
+/** ⌘\ or ctrl+\ folds the panel away. */
+private fun isPanelToggle(event: KeyEvent): Boolean =
+    event.type == KeyEventType.KeyDown &&
+        event.key == Key.Backslash &&
+        (event.isMetaPressed || event.isCtrlPressed)
 
-@Composable
-private fun MenuItem(text: String, onClick: () -> Unit) {
-    Text(
-        text = text,
-        color = Swim.Text,
-        fontSize = 11.sp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-    )
+/**
+ * The Linear page one summary chip stands for, or null when the chip names no page. A team
+ * needs the workspace slug, which arrives with the rest of the reference data.
+ */
+private fun quickLink(chip: ActiveFilter, reference: ReferenceData): String? = when (chip.field) {
+    FilterField.TEAM ->
+        if (reference.urlKey.isBlank() || chip.value == null) null
+        else teamUrl(reference.urlKey, chip.value)
+    FilterField.PROJECT ->
+        reference.projects.firstOrNull { it.name == chip.value }?.url?.ifBlank { null }
+    else -> null
 }
 
 /**
@@ -804,21 +835,25 @@ internal fun GroupUnderlay(
     if (groups.isEmpty()) return
     val density = LocalDensity.current.density
     Canvas(Modifier.fillMaxSize()) {
-        // Canvas units are dp; this draw scope is pixels.
-        groups.forEach { group ->
-            val topLeft = Offset(group.x * density, group.y * density)
-            val size = Size(group.width * density, group.height * density)
-            val radius = CornerRadius(10f * density)
-            drawRoundRect(Swim.Card.copy(alpha = 0.5f), topLeft, size, radius)
-            drawRoundRect(Swim.Border, topLeft, size, radius, style = Stroke(1f * density))
+        // Canvas units are dp; this draw scope is pixels. No fill and no alpha wash: an area is
+        // one thin bright outline, so it reads as a boundary and never dims the cards inside it.
+        groups.forEachIndexed { index, group ->
+            drawRoundRect(
+                color = areaColor(index),
+                topLeft = Offset(group.x * density, group.y * density),
+                size = Size(group.width * density, group.height * density),
+                cornerRadius = CornerRadius(10f * density),
+                style = Stroke(AREA_STROKE * density),
+            )
         }
     }
     // The label is a real composable, not drawn text, because it is the grip for the area drag.
     Box(Modifier.fillMaxSize()) {
-        groups.forEach { group ->
+        groups.forEachIndexed { index, group ->
             key(group.label) {
                 GroupLabel(
                     group = group,
+                    color = areaColor(index),
                     draggable = draggable,
                     density = density,
                     onDrag = { onDrag(group.label, it) },
@@ -832,6 +867,7 @@ internal fun GroupUnderlay(
 @Composable
 private fun GroupLabel(
     group: GroupBox,
+    color: Color,
     draggable: Boolean,
     density: Float,
     onDrag: (Offset) -> Unit,
@@ -874,23 +910,12 @@ private fun GroupLabel(
     ) {
         Text(
             text = group.label,
-            color = if (hovered && draggable) Swim.Text else Swim.TextMuted,
+            color = if (hovered && draggable) Swim.Text else color,
             fontSize = 15.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
         )
     }
-}
-
-private val GROUP_LABEL_STYLE = TextStyle(
-    color = Swim.TextMuted,
-    fontSize = 15.sp,
-    fontWeight = FontWeight.Medium,
-)
-
-@Composable
-private fun Divider() {
-    Box(Modifier.fillMaxWidth().height(1.dp).background(Swim.Border))
 }
 
 /** The wording of a relation confirm. A reversed blocks relation reads as "blocked by". */

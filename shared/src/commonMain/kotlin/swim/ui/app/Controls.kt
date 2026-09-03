@@ -341,26 +341,6 @@ internal fun SwimCheckbox(
     }
 }
 
-/** The "From: <path>" chip. */
-@Composable
-internal fun DismissibleChip(text: String, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier = modifier
-            .background(Swim.Active, ControlShape)
-            .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Text(text, color = Swim.Text, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(
-            text = "✕",
-            color = Swim.TextMuted,
-            fontSize = 10.sp,
-            modifier = Modifier.clickable { onDismiss() }.padding(horizontal = 4.dp),
-        )
-    }
-}
-
 /** A dismissible failure message. Mutations and loads both report here. */
 @Composable
 internal fun ErrorBanner(text: String, onDismiss: () -> Unit, modifier: Modifier = Modifier) {

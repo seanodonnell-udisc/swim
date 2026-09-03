@@ -32,26 +32,95 @@ internal fun categoryBadge(category: CardCategory, ready: Boolean): String? = wh
     else -> null
 }
 
-internal fun categoryColor(category: CardCategory): Color = when (category) {
-    CardCategory.DONE -> Swim.Green
-    CardCategory.IN_PROGRESS -> Swim.Orange
-    CardCategory.IN_REVIEW -> Swim.Green
-    CardCategory.BLOCKED -> Swim.Red
-    CardCategory.PAUSED -> Swim.Blue
-    CardCategory.TODO -> Swim.Todo
-    CardCategory.DEFAULT -> Swim.Muted
+/**
+ * How one card is outlined and tinted. This is the legacy `getNodeStyling` table, ported class
+ * for class: `border-2 border-{c}-500` is [border], `ring-2 ring-{c}-500/30` is [ring],
+ * `hover:border-{c}-400` is [hoverBorder], and the header's `border-b {c}/30` and `bg-{c}/10`
+ * are [divider] and [headerTint].
+ */
+internal data class CardStyle(
+    val border: Color,
+    val borderWidth: Float,
+    val hoverBorder: Color,
+    /** Null for the two categories the legacy card gave no ring: done and backlog. */
+    val ring: Color?,
+    val headerTint: Color,
+    val divider: Color,
+    val badge: Color,
+    val badgeText: Color,
+)
+
+/** The legacy ringed card: a solid outline, a 30% halo outside it, a 10% wash behind the header. */
+private fun ringed(
+    accent: Color,
+    hover: Color,
+    badgeText: Color = Color.White,
+    borderAlpha: Float = 1f,
+    ringAlpha: Float = 0.3f,
+    tintAlpha: Float = 0.10f,
+    badgeAlpha: Float = 1f,
+) = CardStyle(
+    border = accent.copy(alpha = borderAlpha),
+    borderWidth = 2f,
+    hoverBorder = hover,
+    ring = accent.copy(alpha = ringAlpha),
+    headerTint = accent.copy(alpha = tintAlpha),
+    divider = accent.copy(alpha = 0.3f),
+    badge = accent.copy(alpha = badgeAlpha),
+    badgeText = badgeText,
+)
+
+/** The legacy quiet card: one hairline in the default border color and nothing else. */
+private fun quiet(hover: Color) = CardStyle(
+    border = Swim.Border,
+    borderWidth = 1f,
+    hoverBorder = hover,
+    ring = null,
+    headerTint = Color.Transparent,
+    divider = Swim.Border,
+    badge = Swim.Border,
+    badgeText = Swim.Text,
+)
+
+internal fun cardStyle(category: CardCategory): CardStyle = when (category) {
+    CardCategory.IN_PROGRESS ->
+        ringed(Card500.Yellow, Card400.Yellow, badgeText = Color.Black)
+    CardCategory.IN_REVIEW -> ringed(Card500.Green, Card400.Green)
+    CardCategory.BLOCKED -> ringed(Card500.Red, Card400.Red)
+    CardCategory.PAUSED -> ringed(Card500.Blue, Card400.Blue)
+    // The one category the legacy card drew in plain white, at four different alphas.
+    CardCategory.TODO -> ringed(
+        accent = Color.White,
+        hover = Color.White,
+        badgeText = Color.Black,
+        borderAlpha = 0.8f,
+        ringAlpha = 0.2f,
+        tintAlpha = 0.05f,
+        badgeAlpha = 0.9f,
+    )
+    CardCategory.DONE -> quiet(Swim.Border)
+    CardCategory.DEFAULT -> quiet(Swim.Focus)
 }
 
-internal fun categoryBorderWidth(category: CardCategory): Float = when (category) {
-    CardCategory.IN_PROGRESS, CardCategory.IN_REVIEW, CardCategory.BLOCKED, CardCategory.PAUSED -> 2f
-    else -> 1f
+/**
+ * The footer state text. The legacy renderer read this off its OWN palette, not off the Tailwind
+ * ramp the outline used, so an in-review card outlines in `#22C55E` and writes its state in
+ * `#3FB950`. A canceled or invalid state groups with done everywhere but here, where it greys out.
+ */
+internal fun stateColor(state: String, category: CardCategory): Color {
+    val name = state.lowercase()
+    if (CANCELED_WORDS.any { it in name }) return Swim.Muted
+    return when (category) {
+        CardCategory.DONE, CardCategory.IN_REVIEW -> Swim.Green
+        CardCategory.IN_PROGRESS -> Card500.Yellow
+        CardCategory.BLOCKED -> Swim.Red
+        CardCategory.PAUSED -> Swim.Blue
+        CardCategory.TODO -> Swim.TextMuted
+        CardCategory.DEFAULT -> Swim.Muted
+    }
 }
 
-internal fun categoryBorderColor(category: CardCategory): Color = when (category) {
-    CardCategory.TODO -> Swim.Text
-    CardCategory.DONE, CardCategory.DEFAULT -> Swim.Border
-    else -> categoryColor(category)
-}
+private val CANCELED_WORDS = listOf("cancel", "invalid")
 
 /** Available work pops: everything else in the two neutral categories is held back. */
 internal fun cardAlpha(category: CardCategory, ready: Boolean): Float = when {

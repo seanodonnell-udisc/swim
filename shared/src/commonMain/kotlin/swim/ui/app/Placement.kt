@@ -71,7 +71,8 @@ internal const val GROUP_GAP: Float = 120f
 
 /** The group a node belongs to. A node with no project or label still gets a group. */
 internal fun groupKeyOf(node: IssueNode, groupBy: GraphGrouping): String = when (groupBy) {
-    GraphGrouping.NONE -> ""
+    // AUTO never reaches here: `resolveGrouping` runs before anything asks for a group key.
+    GraphGrouping.NONE, GraphGrouping.AUTO -> ""
     GraphGrouping.TEAM -> node.team
     GraphGrouping.PROJECT -> node.project ?: "No project"
     GraphGrouping.LABEL -> node.labels.firstOrNull() ?: "No label"

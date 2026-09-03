@@ -309,6 +309,7 @@ private val KEYS = listOf(
     "0 or ⌘0" to "Zoom to fit",
     "⌘R" to "Reload",
     "⌘L" to "Re-layout",
+    "⌘\\" to "Fold the side panel away, or back",
 )
 
 /** The gestures-and-shortcuts card. Any click or Esc closes it. */

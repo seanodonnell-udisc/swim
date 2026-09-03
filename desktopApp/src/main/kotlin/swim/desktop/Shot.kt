@@ -25,10 +25,12 @@ import swim.ui.app.AppCommand
 import swim.ui.app.AppCommands
 import swim.ui.app.SwimApp
 import swim.ui.app.SwimEnv
+import swim.ui.graph.CardGallery
 import swim.ui.graph.GraphCanvas
 import swim.ui.graph.GraphCanvasPreview
 import swim.ui.graph.GraphCanvasState
 import swim.ui.graph.rememberGraphCanvasState
+import swim.ui.theme.SwimTheme
 import java.io.File
 
 /**
@@ -100,7 +102,7 @@ fun main(args: Array<String>) {
     )
 
     // Milestone mode: default (no cross-area edges), then the sub-toggle on, then an area drag.
-    milestone(savedFilters)
+    groupBy(savedFilters, "MILESTONE")
     shoot(outDir, "p3e-shot-milestone.png", 90, graphEnv())
     shoot(
         outDir, "p3e-shot-milestone-cross.png", 90, graphEnv(),
@@ -112,7 +114,7 @@ fun main(args: Array<String>) {
     )
     savedFilters?.let { Settings().putString(FILTERS, it) }
 
-    grouped(savedFilters)
+    groupBy(savedFilters, "PROJECT")
     shoot(outDir, "p3b-shot-grouped.png", 60, graphEnv())
     savedFilters?.let { Settings().putString(FILTERS, it) }
 
@@ -140,6 +142,32 @@ fun main(args: Array<String>) {
     shootCanvas(outDir, "p3f-shot-derived-edge.png") { scene, state ->
         scene.click(state.toScreen(DERIVED_EDGE))
     }
+
+    // The panel, the modal and the areas. A plain click selects the card AND opens its menu, so
+    // Esc closes the menu; a surface was open, so the selection survives and the panel shows it.
+    shoot(
+        outDir, "ux2-shot-panel-selection.png", 90, graphEnv(),
+        atFrame = 60 to { scene ->
+            scene.click(FIRST_CARD)
+            // The canvas offers a double tap, so the tap that opens the menu only lands once the
+            // double-tap window has closed. Escape before that would close nothing.
+            scene.settle()
+            scene.sendKeyEvent(KeyEvent(Key.Escape, KeyEventType.KeyDown))
+            scene.render()
+        },
+    )
+    shoot(
+        outDir, "ux2-shot-filters-modal.png", 90, graphEnv(),
+        atFrame = 70 to { scene -> scene.click(FILTERS_BUTTON) },
+    )
+
+    // Automatic grouping: the sandbox plans in milestones, so it draws its own areas unasked.
+    groupBy(savedFilters, "AUTO")
+    shoot(outDir, "ux2-shot-milestone-areas.png", 90, graphEnv())
+    savedFilters?.let { Settings().putString(FILTERS, it) }
+
+    // The card close-up. The outline is two lines and a 2dp gap, so it renders at density 2.
+    gallery(outDir, "ux2-shot-card-border.png")
 
     // Last, because it is the only one that wants the flag clear.
     Settings().remove(SEEN_SHORTCUTS)
@@ -196,6 +224,23 @@ private fun shootCanvas(
     }
 }
 
+/** Every card category on its own ground, at density 2, so the outline can be read. */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun gallery(outDir: File, name: String) {
+    if (!wanted(name)) return
+    // Two columns of four 270x120 cards, plus the 14dp gutters, doubled by the density.
+    val scene = ImageComposeScene(width = 1164, height = 1100, density = Density(2f)) {
+        SwimTheme { CardGallery() }
+    }
+    try {
+        val image = scene.render()
+        File(outDir, name).writeBytes(requireNotNull(image.encodeToData()).bytes)
+        Log.line("wrote $name")
+    } finally {
+        scene.close()
+    }
+}
+
 @OptIn(ExperimentalComposeUiApi::class)
 private fun shoot(
     outDir: File,
@@ -223,11 +268,12 @@ private fun shoot(
 }
 
 /**
- * A point inside the first card. The fit anchors the graph at (48, 48) below the two 48dp toolbar
- * rows, so this lands inside a 270x120 card at any scale down to about 0.45.
+ * A point inside the first card. The two toolbar rows are gone and the panel took their place,
+ * so the canvas now starts at [CANVAS_LEFT] and at the top of the window; the fit anchors the
+ * graph 48 in from both. This lands inside a 270x120 card at any scale down to about 0.45.
  */
-private val FIRST_CARD = Offset(108f, 176f)
-private val PICK_TARGET = Offset(560f, 460f)
+private val FIRST_CARD = Offset(CANVAS_LEFT + 60f, 80f)
+private val PICK_TARGET = Offset(CANVAS_LEFT + 512f, 364f)
 
 /**
  * Canvas units, not pixels: the two points on the preview graph worth staging. The badge sits
@@ -245,6 +291,15 @@ private fun menuRow(origin: Offset, index: Int) =
 
 private fun submenuOrigin(origin: Offset, index: Int) =
     Offset(origin.x + MENU_WIDTH, origin.y + index * MENU_ROW)
+
+/** Paced frames, so a gesture whose detector waits on real time can finish. */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun ImageComposeScene.settle() {
+    repeat(3) {
+        Thread.sleep(FRAME_PAUSE_MS)
+        render()
+    }
+}
 
 @OptIn(ExperimentalComposeUiApi::class)
 private fun ImageComposeScene.move(at: Offset) {
@@ -307,16 +362,28 @@ private fun ImageComposeScene.rightClick(at: Offset) {
     render()
 }
 
-/** Persists group-by-milestone for the three milestone shots. */
-private fun milestone(saved: String?) {
-    saved?.let { Settings().putString(FILTERS, it.replace("\"NONE\"", "\"MILESTONE\"")) }
+/**
+ * Persists one grouping for the shots that need it. A plain string swap is not enough: the saved
+ * grouping is whatever the running app last chose, so the value is rewritten by its key.
+ */
+private fun groupBy(saved: String?, grouping: String) {
+    saved?.let {
+        Settings().putString(FILTERS, GROUP_BY.replace(it, "\"groupBy\":\"$grouping\""))
+    }
 }
 
-/** The "Cross-milestone links" checkbox, last in the view toolbar before the counts. */
-private val CROSS_TOGGLE = Offset(1180f, 73f)
+private val GROUP_BY = Regex("\"groupBy\"\\s*:\\s*\"[A-Z]+\"")
 
-/** The "Derive relations from PR stacks" checkbox. Read off p3f-shot-live.png. */
-private val DERIVE_TOGGLE = Offset(1150f, 73f)
+/**
+ * Where the canvas starts: the 280dp panel plus its 1dp rule. Every point on the graph is
+ * measured from here, so collapsing or resizing the panel moves one constant, not twenty.
+ */
+private const val CANVAS_LEFT = 281f
+
+/** Points inside the panel. Read off ux2-shot-panel-selection.png. */
+private val FILTERS_BUTTON = Offset(140f, 149f)
+private val CROSS_TOGGLE = Offset(60f, 521f)
+private val DERIVE_TOGGLE = Offset(60f, 479f)
 
 /** Names only one shot, or null for all of them. */
 private var only: String? = null
@@ -324,12 +391,7 @@ private var only: String? = null
 private fun wanted(name: String): Boolean = only?.let { name.contains(it) } != false
 
 /** Inside the second area's label band. Read off the default milestone shot. */
-private val SECOND_LABEL = Offset(445f, 139f)
-
-/** Persists group-by-project, so the group outlines appear in one shot. */
-private fun grouped(saved: String?) {
-    saved?.let { Settings().putString(FILTERS, it.replace("\"NONE\"", "\"PROJECT\"")) }
-}
+private val SECOND_LABEL = Offset(CANVAS_LEFT + 354f, 41f)
 
 private const val FILTERS = "swim.filters"
 private const val SEEN_SHORTCUTS = "swim.seenShortcuts"

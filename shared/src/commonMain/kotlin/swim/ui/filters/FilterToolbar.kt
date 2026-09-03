@@ -1,16 +1,27 @@
 package swim.ui.filters
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import swim.core.model.FilterOptions
 import swim.core.model.LabelSummary
 import swim.core.model.PRIORITY_LABELS
@@ -18,7 +29,6 @@ import swim.core.model.ProjectSummary
 import swim.core.model.TeamSummary
 import swim.core.model.UserSummary
 import swim.core.session.Availables
-import swim.core.session.FilterState
 import swim.core.session.FilterStore
 import swim.core.session.availableLabels
 import swim.core.session.availableProjects
@@ -30,6 +40,7 @@ import swim.ui.app.SwimMultiSelect
 import swim.ui.app.SwimOption
 import swim.ui.app.SwimSelect
 import swim.ui.app.SwimTextField
+import swim.ui.graph.Swim
 import swim.ui.theme.SwimDimens
 
 /** The workspace lists the filter bar picks from. Empty until the first reference load answers. */
@@ -38,6 +49,8 @@ data class ReferenceData(
     val projects: List<ProjectSummary> = emptyList(),
     val labels: List<LabelSummary> = emptyList(),
     val users: List<UserSummary> = emptyList(),
+    /** The workspace slug in a Linear URL. Empty until the reference load answers. */
+    val urlKey: String = "",
 )
 
 /** The status types Linear has, worded as the legacy filter bar worded them. */
@@ -80,105 +93,132 @@ internal fun loadButtonLabel(loaded: Boolean, armed: Boolean): String =
 internal fun clearVisible(filters: FilterOptions): Boolean = filters != FilterOptions()
 
 /**
- * Row one of the toolbar: the query. Every control writes through [store], so editing one arms a
- * load instead of running it.
+ * The whole filter set, behind one button. Every control writes straight through [store], so an
+ * edit here arms a load; only Apply runs it. The panel keeps nothing but the summary chips.
  */
 @Composable
-internal fun FilterToolbar(
-    state: FilterState,
+internal fun FiltersDialog(
+    filters: FilterOptions,
     availables: Availables,
     store: FilterStore,
-    loaded: Boolean,
-    loading: Boolean,
-    onLoad: () -> Unit,
-    modifier: Modifier = Modifier,
-    trailing: @Composable () -> Unit = {},
+    onApply: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
-    val filters = state.filters
-    Row(
-        modifier = modifier.fillMaxWidth().heightIn(min = SwimDimens.HeaderHeight)
-            .padding(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(SwimDimens.Gap),
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { onDismiss() },
+        contentAlignment = Alignment.Center,
     ) {
-        // The query controls scroll when the window is narrow; the actions stay pinned right.
-        Row(
-            modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(SwimDimens.Gap),
+        Column(
+            modifier = Modifier
+                .width(FILTERS_DIALOG_WIDTH)
+                .background(Swim.Card, RoundedCornerShape(8.dp))
+                .border(1.dp, Swim.Border, RoundedCornerShape(8.dp))
+                // The backdrop takes every click that lands between the controls otherwise, and
+                // closes the dialog under the pointer.
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {}
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            SwimMultiSelect(
-                label = "Team",
-                selected = teamKeys(filters.team),
-                options = availables.teams.map { SwimOption(it.key, "${it.key} · ${it.name}") },
-                onChange = { store.setTeam(commaJoin(it)) },
-                width = 112.dp,
-            )
-            SwimSelect(
-                label = "Project",
-                selected = filters.project,
-                options = availables.projects.map { SwimOption(it.name, it.name) },
-                onSelect = { name ->
-                    store.setProject(name, availables.projects.firstOrNull { it.name == name }?.id)
-                },
-                width = 160.dp,
-            )
-            SwimSelect(
-                label = "Label",
-                selected = filters.label,
-                options = availables.labels.map { SwimOption(it.name, it.name) },
-                onSelect = store::setLabel,
-                width = 112.dp,
-            )
-            SwimSelect(
-                label = "Exclude",
-                selected = filters.excludeLabel,
-                options = availables.labels.map { SwimOption(it.name, it.name) },
-                onSelect = store::setExcludeLabel,
-                width = 118.dp,
-            )
-            SwimSelect(
-                label = "Priority",
-                selected = filters.priority?.toString(),
-                options = PRIORITY_OPTIONS,
-                onSelect = { store.setPriority(it?.toIntOrNull()) },
-                width = 124.dp,
-            )
-            SwimMultiSelect(
-                label = "Status",
-                selected = commaValues(filters.stateType),
-                options = STATE_TYPE_OPTIONS,
-                onChange = { store.setStateType(commaJoin(it)) },
-                width = 118.dp,
-            )
-            SwimTextField(
-                value = filters.state.orEmpty(),
-                onValueChange = { store.setState(it.ifBlank { null }) },
-                placeholder = "State",
-                width = 88.dp,
-            )
-            SwimTextField(
-                value = filters.assignee.orEmpty(),
-                onValueChange = { store.setAssignee(it.ifBlank { null }) },
-                placeholder = "Assignee",
-                width = 92.dp,
-            )
+            Text("Filters", color = Swim.Text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+
+            FilterRow {
+                SwimMultiSelect(
+                    label = "Team",
+                    selected = teamKeys(filters.team),
+                    options = availables.teams.map { SwimOption(it.key, "${it.key} · ${it.name}") },
+                    onChange = { store.setTeam(commaJoin(it)) },
+                    width = FIELD,
+                )
+                SwimSelect(
+                    label = "Project",
+                    selected = filters.project,
+                    options = availables.projects.map { SwimOption(it.name, it.name) },
+                    onSelect = { name ->
+                        store.setProject(name, availables.projects.firstOrNull { it.name == name }?.id)
+                    },
+                    width = FIELD,
+                )
+            }
+            FilterRow {
+                SwimSelect(
+                    label = "Label",
+                    selected = filters.label,
+                    options = availables.labels.map { SwimOption(it.name, it.name) },
+                    onSelect = store::setLabel,
+                    width = FIELD,
+                )
+                SwimSelect(
+                    label = "Exclude",
+                    selected = filters.excludeLabel,
+                    options = availables.labels.map { SwimOption(it.name, it.name) },
+                    onSelect = store::setExcludeLabel,
+                    width = FIELD,
+                )
+            }
+            FilterRow {
+                SwimSelect(
+                    label = "Priority",
+                    selected = filters.priority?.toString(),
+                    options = PRIORITY_OPTIONS,
+                    onSelect = { store.setPriority(it?.toIntOrNull()) },
+                    width = FIELD,
+                )
+                SwimMultiSelect(
+                    label = "Status",
+                    selected = commaValues(filters.stateType),
+                    options = STATE_TYPE_OPTIONS,
+                    onChange = { store.setStateType(commaJoin(it)) },
+                    width = FIELD,
+                )
+            }
+            FilterRow {
+                SwimTextField(
+                    value = filters.state.orEmpty(),
+                    onValueChange = { store.setState(it.ifBlank { null }) },
+                    placeholder = "State",
+                    width = FIELD,
+                )
+                SwimTextField(
+                    value = filters.assignee.orEmpty(),
+                    onValueChange = { store.setAssignee(it.ifBlank { null }) },
+                    placeholder = "Assignee",
+                    width = FIELD,
+                )
+            }
             SwimCheckbox(
-                label = "Completed",
+                label = "Include completed",
                 checked = filters.includeCompleted,
                 onCheckedChange = store::setIncludeCompleted,
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(SwimDimens.Gap, Alignment.End),
+            ) {
+                if (clearVisible(filters)) SwimButton("Clear", store::clearFilters)
+                SwimButton("Cancel", onDismiss)
+                SwimButton("Apply", { onApply(); onDismiss() }, primary = true)
+            }
         }
-
-        SwimButton(
-            text = loadButtonLabel(loaded, !state.shouldLoadIssues),
-            primary = true,
-            enabled = !loading,
-            onClick = onLoad,
-        )
-        if (clearVisible(filters)) {
-            SwimButton("Clear", store::clearFilters)
-        }
-        trailing()
     }
 }
+
+@Composable
+private fun FilterRow(content: @Composable () -> Unit) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(SwimDimens.Gap),
+        verticalAlignment = Alignment.CenterVertically,
+        content = { content() },
+    )
+}
+
+private val FIELD = 190.dp
+internal val FILTERS_DIALOG_WIDTH = 424.dp

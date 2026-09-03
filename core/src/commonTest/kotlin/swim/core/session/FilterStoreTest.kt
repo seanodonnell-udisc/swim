@@ -9,12 +9,25 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import swim.core.model.FilterOptions
+import swim.core.model.IssueNode
 import swim.core.model.ResolvedLinearUrl
+import swim.core.model.WorkflowStateType
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+
+private fun issue(id: String, milestone: String? = null) = IssueNode(
+    id = id,
+    identifier = id,
+    title = id,
+    state = "Todo",
+    stateType = WorkflowStateType.UNSTARTED,
+    priority = 0,
+    team = "ENG",
+    milestone = milestone,
+)
 
 class FilterStoreTest {
     @Test
@@ -22,6 +35,31 @@ class FilterStoreTest {
         val store = FilterStore(FakeSettings())
 
         assertEquals(FilterState(), store.state.value)
+        assertEquals(GraphGrouping.AUTO, store.state.value.groupBy)
+    }
+
+    @Test
+    fun autoGroupsByMilestoneOnlyWhenTheGraphHasOne() {
+        val plain = listOf(issue("A"), issue("B"))
+        val planned = listOf(issue("A"), issue("B", milestone = "M1"))
+
+        assertEquals(GraphGrouping.NONE, resolveGrouping(GraphGrouping.AUTO, plain))
+        assertEquals(GraphGrouping.MILESTONE, resolveGrouping(GraphGrouping.AUTO, planned))
+        // A blank milestone name is no milestone at all.
+        assertEquals(
+            GraphGrouping.NONE,
+            resolveGrouping(GraphGrouping.AUTO, listOf(issue("A", milestone = "  "))),
+        )
+    }
+
+    @Test
+    fun anExplicitGroupingBeatsTheGraph() {
+        val planned = listOf(issue("A", milestone = "M1"))
+
+        // Every explicit choice passes through, including the one AUTO would have picked.
+        GraphGrouping.entries.filterNot { it == GraphGrouping.AUTO }.forEach { choice ->
+            assertEquals(choice, resolveGrouping(choice, planned))
+        }
     }
 
     @Test

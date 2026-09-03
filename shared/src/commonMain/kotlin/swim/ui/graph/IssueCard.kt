@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -95,6 +96,7 @@ internal fun IssueCard(
     // captured on the first hover. Read the current one at gesture time instead.
     val live = rememberUpdatedState(handlers)
     val category = cardCategory(node.state, node.stateType)
+    val style = cardStyle(category)
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     val density = LocalDensity.current.density
@@ -115,14 +117,23 @@ internal fun IssueCard(
             modifier = Modifier
                 .size(GraphCanvasDefaults.NodeWidth.dp, GraphCanvasDefaults.NodeHeight.dp)
                 .alpha(cardAlpha(category, ready))
-                .background(
-                    if (hovered) Swim.CardHover else Swim.Card,
-                    RoundedCornerShape(6.dp),
+                // The legacy two-tone outline: `ring-2 ring-{c}/30 ring-offset-2` outside a solid
+                // `border-2 border-{c}-500`. The ring sits at the card edge and the solid line
+                // 4dp in, so the gap between them shows the canvas exactly as ring-offset does.
+                // Every card reserves the band, so the quiet ones keep the same content width.
+                .then(
+                    style.ring?.let { Modifier.border(2.dp, it, RING_SHAPE) } ?: Modifier,
                 )
+                .padding(RING_BAND)
+                .background(Swim.CardHover, CARD_SHAPE)
                 .border(
-                    width = if (selected) 2.dp else categoryBorderWidth(category).dp,
-                    color = if (selected) Swim.Focus else categoryBorderColor(category),
-                    shape = RoundedCornerShape(6.dp),
+                    width = if (selected) 2.dp else style.borderWidth.dp,
+                    color = when {
+                        selected -> Swim.Focus
+                        hovered -> style.hoverBorder
+                        else -> style.border
+                    },
+                    shape = CARD_SHAPE,
                 )
                 .pointerInput(node.identifier) {
                     detectTapGestures(
@@ -152,14 +163,14 @@ internal fun IssueCard(
                             }
                         }
                     },
-                )
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+                ),
         ) {
-            CardHeader(node, category, ready, copied) {
+            // The legacy card is three bands split by hairlines, with a wash behind the header.
+            CardHeader(node, style, category, ready, copied) {
                 copied = true
                 callbacks.onCopyId(node.identifier)
             }
+            CardRule(style.divider)
             Text(
                 text = node.title,
                 color = Swim.Text,
@@ -167,9 +178,10 @@ internal fun IssueCard(
                 lineHeight = 15.sp,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
             )
             Spacer(Modifier.weight(1f))
+            CardRule(style.divider)
             CardFooter(node, category, prStatuses, users, onOpenPr, callbacks)
         }
 
@@ -207,9 +219,23 @@ internal fun IssueCard(
     }
 }
 
+/** The card's outer ring and its inner face. Two shapes, because the face is inset by the band. */
+private val RING_SHAPE = RoundedCornerShape(6.dp)
+private val CARD_SHAPE = RoundedCornerShape(4.dp)
+
+/** `ring-2` plus `ring-offset-2`: the halo, and the gap that keeps it off the solid line. */
+private val RING_BAND = 4.dp
+
+/** One of the two hairlines the legacy card ruled its header and footer off with. */
+@Composable
+private fun CardRule(color: Color) {
+    Box(Modifier.fillMaxWidth().height(1.dp).background(color))
+}
+
 @Composable
 private fun CardHeader(
     node: IssueNode,
+    style: CardStyle,
     category: CardCategory,
     ready: Boolean,
     copied: Boolean,
@@ -218,7 +244,10 @@ private fun CardHeader(
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(style.headerTint)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
     ) {
         Box(Modifier.size(7.dp).background(priorityColor(node.priority), CircleShape))
         Text(
@@ -239,7 +268,7 @@ private fun CardHeader(
                 }
                 .padding(horizontal = 1.dp),
         )
-        categoryBadge(category, ready)?.let { Badge(it, categoryColor(category)) }
+        categoryBadge(category, ready)?.let { Badge(it, style.badge, style.badgeText) }
         Spacer(Modifier.weight(1f))
         node.estimate?.let {
             Text(text = "$it", color = Swim.TextMuted, fontSize = 10.sp)
@@ -259,11 +288,11 @@ private fun CardFooter(
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
     ) {
         Text(
             text = node.state,
-            color = categoryColor(category),
+            color = stateColor(node.state, category),
             fontSize = 9.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -283,15 +312,17 @@ private fun CardFooter(
     }
 }
 
+/** The legacy badge is a solid fill in the card's accent, not a wash: `bg-{c}-500 text-white`. */
 @Composable
-private fun Badge(text: String, color: Color) {
+private fun Badge(text: String, background: Color, textColor: Color) {
     Text(
         text = text,
-        color = color,
+        color = textColor,
         fontSize = 8.sp,
+        fontWeight = FontWeight.SemiBold,
         maxLines = 1,
         modifier = Modifier
-            .background(color.copy(alpha = 0.15f), RoundedCornerShape(3.dp))
+            .background(background, RoundedCornerShape(3.dp))
             .padding(horizontal = 3.dp, vertical = 1.dp),
     )
 }

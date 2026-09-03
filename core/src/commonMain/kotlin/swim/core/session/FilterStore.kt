@@ -11,16 +11,33 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import swim.core.model.FilterOptions
+import swim.core.model.IssueNode
 import swim.core.model.ResolvedLinearUrl
 
-/** How the graph groups its nodes. Grouping is a view setting, not part of the query. */
+/**
+ * How the graph groups its nodes. Grouping is a view setting, not part of the query.
+ *
+ * [AUTO] is the default and is not a layout of its own: [resolveGrouping] turns it into
+ * [MILESTONE] or [NONE] against the graph that actually loaded. Everything downstream of that
+ * call sees one of the four real groupings.
+ */
 @Serializable
-enum class GraphGrouping { NONE, TEAM, PROJECT, LABEL, MILESTONE }
+enum class GraphGrouping { NONE, TEAM, PROJECT, LABEL, MILESTONE, AUTO }
+
+/**
+ * What [groupBy] means for this graph. A project that plans in milestones groups by them without
+ * being asked; a query with no milestone anywhere stays flat. Any explicit choice wins outright.
+ */
+fun resolveGrouping(groupBy: GraphGrouping, nodes: List<IssueNode>): GraphGrouping = when {
+    groupBy != GraphGrouping.AUTO -> groupBy
+    nodes.any { !it.milestone.isNullOrBlank() } -> GraphGrouping.MILESTONE
+    else -> GraphGrouping.NONE
+}
 
 /** The filter bar as a whole: what to ask Linear for, and whether to ask yet. */
 data class FilterState(
     val filters: FilterOptions = FilterOptions(),
-    val groupBy: GraphGrouping = GraphGrouping.NONE,
+    val groupBy: GraphGrouping = GraphGrouping.AUTO,
     val shouldLoadIssues: Boolean = false,
     val urlSource: String? = null,
     /** The issue a pasted issue URL named. The graph selects and centres it once it is placed. */

@@ -274,7 +274,9 @@ class GraphSession(
      */
     fun layoutCacheKey(): String {
         val loaded = (graph.value as? GraphState.Loaded)?.filters ?: filterStore.filters
-        return cacheKey(loaded, filterStore.state.value.groupBy)
+        // The RESOLVED grouping, so a graph the user then pins to Milestone by hand keeps the
+        // arrangement Auto already saved for it instead of starting over under a second key.
+        return cacheKey(loaded, resolveGrouping(filterStore.state.value.groupBy, projected.value.nodes))
     }
 
     /** Merges dragged node positions into the current query's saved layout. */
