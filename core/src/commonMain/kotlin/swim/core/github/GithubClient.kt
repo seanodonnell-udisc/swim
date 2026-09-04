@@ -13,6 +13,8 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -21,6 +23,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
+import swim.core.config.envVar
+import swim.core.config.readFileOrNull
 import swim.core.model.AuthError
 import swim.core.model.PrStatus
 
@@ -35,14 +39,22 @@ data class PrRef(val url: String, val owner: String, val name: String, val numbe
 class GithubClient(
     private val http: HttpClient,
     private val log: (String) -> Unit = {},
+    private val demoPath: String? = envVar(DEMO_PRS_ENV),
     private val token: suspend () -> String?,
 ) {
+    private val demoStatuses: Map<String, PrStatus>? by lazy { loadDemoPrStatuses(log, demoPath) }
+
     /**
      * The review decision and the check status for a batch of pull requests, in one request,
      * or null when GitHub could not answer. The values travel as GraphQL variables. Swim does
      * not put them in the query text, because an attacker can control a repository name.
+     *
+     * `SWIM_DEMO_PRS` skips GitHub entirely: the answer comes from a local file instead, so
+     * Swim can demo pull-request features with no token and no network call.
      */
     suspend fun getPrStatuses(urls: List<String>): Map<String, PrStatus>? {
+        demoStatuses?.let { demo -> return urls.mapNotNull { url -> demo[url]?.let { url to it } }.toMap() }
+
         val accessToken = token() ?: return emptyMap()
         val refs = urls.mapNotNull(::parsePrUrl)
         if (refs.isEmpty()) return emptyMap()
@@ -174,3 +186,33 @@ private val githubJson = Json { ignoreUnknownKeys = true }
 private const val GRAPHQL_URL = "https://api.github.com/graphql"
 private const val USER_URL = "https://api.github.com/user"
 private const val USER_AGENT = "swim"
+
+/** The environment variable that points at a demo pull-request file. See `docs/demo.md`. */
+const val DEMO_PRS_ENV: String = "SWIM_DEMO_PRS"
+
+private val demoPrsSerializer = MapSerializer(String.serializer(), PrStatus.serializer())
+
+/**
+ * The demo pull-request file named by `SWIM_DEMO_PRS`, or null when the variable is unset, the
+ * file is missing, or the file does not parse. A missing or malformed file falls back to the
+ * real GitHub client rather than crashing Swim.
+ */
+private fun loadDemoPrStatuses(log: (String) -> Unit, path: String?): Map<String, PrStatus>? {
+    if (path == null) return null
+    val text = readFileOrNull(path)
+    if (text == null) {
+        log("github: demo pull-request file $path not found; using GitHub")
+        return null
+    }
+    return try {
+        val demo = githubJson.decodeFromString(demoPrsSerializer, text)
+        log("github: demo pull-request data from $path (${demo.size} entries)")
+        demo
+    } catch (e: Exception) {
+        log("github: demo pull-request file $path is malformed; using GitHub")
+        null
+    }
+}
+
+/** True when `SWIM_DEMO_PRS` names a file that parses, so pull-request status needs no token. */
+fun demoPrsConfigured(path: String? = envVar(DEMO_PRS_ENV)): Boolean = loadDemoPrStatuses({}, path) != null

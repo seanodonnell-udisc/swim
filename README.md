@@ -12,6 +12,8 @@ You must register your own OAuth applications before you sign in. Task 0004 give
 
 The desktop app is the only complete surface. The Android app and the iOS app build, but they show one screen.
 
+`docs/demo.md` shows how to try the pull-request features with sample data and no GitHub account.
+
 ## What Swim does today
 
 - Swim lays out issues as tidy blocker trees.
