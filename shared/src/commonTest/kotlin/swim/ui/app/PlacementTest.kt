@@ -273,11 +273,12 @@ class PlacementTest {
     @Test
     fun aFreshMemberLandsInsideTheAreaThatWasDragged() {
         val before = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, PositionSnapshot())
-        val onlyOffset = PositionSnapshot(mapOf(KEY to mapOf(groupOffsetKey("M1") to Position(300f, 55f))))
+        // Less than the gap between two areas, so M1 does not reach M2 and nothing is separated.
+        val onlyOffset = PositionSnapshot(mapOf(KEY to mapOf(groupOffsetKey("M1") to Position(100f, 55f))))
         val after = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, onlyOffset)
         listOf("A", "B").forEach { id ->
             val was = before.positions.getValue(id)
-            assertEquals(Position(was.x + 300f, was.y + 55f), after.positions.getValue(id))
+            assertEquals(Position(was.x + 100f, was.y + 55f), after.positions.getValue(id))
         }
         assertEquals(before.positions.getValue("C"), after.positions.getValue("C"))
     }
@@ -462,6 +463,95 @@ class PlacementTest {
         assertEquals(current.getValue("A"), settled.getValue("A"), "the blocker moved")
         assertEquals(current.getValue("D"), settled.getValue("D"), "an unrelated card moved")
         assertEquals(current.keys, settled.keys, "the map lost or gained a card")
+    }
+
+    // -- areas that would cover one another ----------------------------------------------------
+
+    /** A saved layout that puts the whole of M2 inside M1: what a milestone change can leave. */
+    private val overlapping = PositionSnapshot(
+        mapOf(
+            KEY to mapOf(
+                "A" to Position(0f, 0f),
+                "B" to Position(0f, 200f),
+                "C" to Position(100f, 100f),
+                "D" to Position(2000f, 0f),
+            ),
+        ),
+    )
+
+    private fun assertNoAreaCoversAnother(groups: List<GroupBox>) {
+        for (i in groups.indices) {
+            for (j in i + 1 until groups.size) {
+                val a = groups[i]
+                val b = groups[j]
+                val covers = b.x < a.x + a.width && a.x < b.x + b.width &&
+                    b.y < a.y + a.height && a.y < b.y + b.height
+                assertTrue(!covers, "${a.label} still covers ${b.label}")
+            }
+        }
+    }
+
+    @Test
+    fun areasThatWouldCoverEachOtherAreSeparated() {
+        val before = groupBoxesOf(milestoned, GraphGrouping.MILESTONE, overlapping.byKey.getValue(KEY))
+        assertTrue(
+            before.first { it.label == "M2" }.x < before.first { it.label == "M1" }.x +
+                before.first { it.label == "M1" }.width,
+            "the fixture does not force the bad case",
+        )
+
+        val placed = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, overlapping)
+        assertNoAreaCoversAnother(placed.groups)
+
+        // Every card kept its place inside its own area, so the arrangement is untouched.
+        for (box in placed.groups) {
+            val was = before.first { it.label == box.label }
+            idsIn(milestoned, GraphGrouping.MILESTONE, box.label).forEach { id ->
+                val old = overlapping.byKey.getValue(KEY).getValue(id)
+                val now = placed.positions.getValue(id)
+                assertEquals(
+                    Position(old.x - was.x, old.y - was.y),
+                    Position(now.x - box.x, now.y - box.y),
+                    "$id moved inside ${box.label}",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun aSeparatedAreaIsSavedAndStaysPutOnTheNextPass() {
+        val placed = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, overlapping)
+        val again = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, placed.snapshot)
+        assertEquals(placed.positions, again.positions, "the areas moved a second time")
+        assertNoAreaCoversAnother(again.groups)
+    }
+
+    @Test
+    fun separatingTheAreasIsMachinePlacementAndNotAHandEdit() {
+        val placed = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, overlapping)
+        assertTrue(placed.groups.size > 1)
+        assertTrue(!placed.handEdited, "the machine marked the arrangement hand-edited")
+        assertTrue(
+            EDITED_KEY !in placed.snapshot.byKey.getValue(KEY),
+            "the saved arrangement gained the hand-edited mark",
+        )
+    }
+
+    @Test
+    fun anOffsetForAMilestoneTheGraphNoLongerHoldsIsDropped() {
+        val stale = PositionSnapshot(
+            mapOf(
+                KEY to mapOf(
+                    groupOffsetKey("M1") to Position(0f, 40f),
+                    groupOffsetKey("Gone") to Position(900f, 900f),
+                ),
+            ),
+        )
+        val placed = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, stale)
+        val saved = placed.snapshot.byKey.getValue(KEY)
+        assertTrue(groupOffsetKey("Gone") !in saved, "a stale area offset survived the load")
+        assertEquals(Position(0f, 40f), saved.getValue(groupOffsetKey("M1")))
+        assertEquals(listOf("M1", "M2", "No milestone"), placed.groups.map { it.label })
     }
 
     // -- the hand-edited mark -------------------------------------------------------------------

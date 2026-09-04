@@ -6,6 +6,7 @@ import swim.core.model.IssueNode
 import swim.core.session.GraphGrouping
 import swim.core.session.EDITED_KEY
 import swim.core.session.groupingOf
+import swim.layout.AreaBox
 import swim.layout.LayoutEdge
 import swim.layout.LayoutNode
 import swim.layout.LayoutParams
@@ -13,6 +14,7 @@ import swim.layout.LayoutResult
 import swim.layout.Position
 import swim.layout.PositionSnapshot
 import swim.layout.layout
+import swim.layout.resolveAreaOverlaps
 import swim.layout.reuseAndPlace
 import swim.ui.graph.EdgeKey
 import swim.ui.graph.GraphCanvasDefaults
@@ -177,23 +179,84 @@ fun placeGraph(
 
     val placed = reuseAndPlace(cacheKey, fresh, nodes, forCache(snapshot, cacheKey))
     val saved = snapshot.byKey[cacheKey].orEmpty()
-    val reserved = saved.filterKeys(::isReserved)
+
+    // Whatever the saved layout says, two areas must not cover each other after this pass.
+    val boxes = groupBoxesOf(graph, groupBy, placed.positions)
+    val deltas = resolveAreaOverlaps(
+        boxes.map { AreaBox(it.label, it.x, it.y, it.width, it.height) },
+        params.treeGap,
+        params.maxRowWidth,
+    )
+    val positions = shiftAreas(graph, groupBy, placed.positions, deltas)
+    val groups = if (deltas.isEmpty()) boxes else groupBoxesOf(graph, groupBy, positions)
+
+    val reserved = nextReserved(graph, groupBy, snapshot, cacheKey, deltas)
+    // A card the user placed by hand moves with its area, so the saved copy has to move too.
+    // A saved card the graph no longer holds keeps the coordinates it had.
+    val movedSaved = saved.filterKeys { !isReserved(it) }
+        .mapValues { (id, position) -> positions[id] ?: position }
     return GraphPlacement(
-        positions = placed.positions,
+        positions = positions,
         crossLinks = fresh.crossLinks.mapTo(mutableSetOf()) { blocksEdgeKey(it.from, it.to) },
         cycleEdges = fresh.cycleEdges.mapTo(mutableSetOf()) { blocksEdgeKey(it.from, it.to) },
-        groups = groupBoxesOf(graph, groupBy, placed.positions),
-        // Only an inherit writes a new entry. Rebuild it on the real snapshot so the reserved
-        // entries, which the cache never saw, are not dropped on the way back out.
-        snapshot = if (placed.inherited) {
-            PositionSnapshot(snapshot.byKey + (cacheKey to placed.positions + reserved))
-        } else {
-            snapshot
+        groups = groups,
+        // An inherit writes the whole arrangement. A separated area or a pruned offset writes
+        // only what was saved already, so an auto-placed card is not frozen where it landed.
+        // Either way the entry is rebuilt on the real snapshot, so the reserved entries, which
+        // the cache never saw, are not dropped on the way back out.
+        snapshot = when {
+            placed.inherited ->
+                PositionSnapshot(snapshot.byKey + (cacheKey to positions + reserved))
+            reserved != saved.filterKeys(::isReserved) || deltas.isNotEmpty() ->
+                PositionSnapshot(snapshot.byKey + (cacheKey to movedSaved + reserved))
+            else -> snapshot
         },
         // Per key, and never inherited: a key that borrowed another's coordinates has not been
         // arranged by hand under its own arrangement, so it is still the machine's to route.
+        // Separating the areas is the machine placing them, so it never sets the mark either.
         handEdited = EDITED_KEY in saved,
     )
+}
+
+/** Translates every member of each moved area, so the arrangement inside the area is kept. */
+private fun shiftAreas(
+    graph: GraphData,
+    groupBy: GraphGrouping,
+    positions: Map<String, Position>,
+    deltas: Map<String, Position>,
+): Map<String, Position> {
+    if (deltas.isEmpty()) return positions
+    val groupOf = slotGroups(graph, groupBy)
+    return positions.mapValues { (slot, position) ->
+        val delta = deltas[groupOf[slot]] ?: return@mapValues position
+        Position(position.x + delta.x, position.y + delta.y)
+    }
+}
+
+/**
+ * The reserved entries to save: each area's drag offset carried by the area's own delta, plus
+ * the hand-edited mark when it was already there. An offset for a group the graph no longer
+ * holds is dropped, so a milestone that has gone cannot bring a ghost area back on the next load.
+ */
+private fun nextReserved(
+    graph: GraphData,
+    groupBy: GraphGrouping,
+    snapshot: PositionSnapshot,
+    cacheKey: String,
+    deltas: Map<String, Position>,
+): Map<String, Position> {
+    val saved = snapshot.byKey[cacheKey].orEmpty()
+    val edited = saved.filterKeys { it == EDITED_KEY }
+    if (groupBy == GraphGrouping.NONE) return saved.filterKeys(::isReserved)
+
+    val live = slotGroups(graph, groupBy).values.toSet()
+    val offsets = groupOffsetsIn(snapshot, cacheKey)
+    val next = (offsets.keys + deltas.keys).filter { it in live }.associate { group ->
+        val base = offsets[group] ?: Position(0f, 0f)
+        val delta = deltas[group] ?: Position(0f, 0f)
+        groupOffsetKey(group) to Position(base.x + delta.x, base.y + delta.y)
+    }
+    return next + edited
 }
 
 /**

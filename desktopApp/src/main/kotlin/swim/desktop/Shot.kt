@@ -52,7 +52,11 @@ fun main(args: Array<String>) {
 
     // Its own file store. The settings-backed fallback caps a value at 8 KB, which a real
     // graph's layout passes, and the shots must not write the running app's positions either.
-    val positions = java.nio.file.Files.createTempFile("swim-shot-positions", ".json")
+    // -Pswim.shot.positions names a layout to start from, so a shot can stage a saved
+    // arrangement the app would not produce on its own. That file is kept, not deleted.
+    val seed = System.getProperty("swim.shot.positions")
+    val positions = seed?.let { java.nio.file.Path.of(it) }
+        ?: java.nio.file.Files.createTempFile("swim-shot-positions", ".json")
     fun graphEnv(commands: AppCommands = AppCommands(), tokens: TokenStore = tokenStore()) = SwimEnv(
         http, tokens, Settings(), scope(), config = loadConfig(),
         commands = commands, devAutoload = autoload, log = Log::line,
@@ -174,7 +178,7 @@ fun main(args: Array<String>) {
     shoot(outDir, "p3d-shot-shortcuts.png", 60, graphEnv())
     if (savedSeen == null) Settings().remove(SEEN_SHORTCUTS) else Settings().putBoolean(SEEN_SHORTCUTS, savedSeen)
 
-    java.nio.file.Files.deleteIfExists(positions)
+    if (seed == null) java.nio.file.Files.deleteIfExists(positions)
     Log.line("shots written to ${outDir.absolutePath}")
     kotlin.system.exitProcess(0)
 }
