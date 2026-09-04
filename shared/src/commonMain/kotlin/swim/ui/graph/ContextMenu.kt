@@ -57,6 +57,7 @@ import swim.core.model.PrStatus
 import swim.core.model.RelationType
 import swim.core.model.StateSummary
 import swim.core.model.UserSummary
+import swim.ui.app.SwimButton
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -293,10 +294,13 @@ private fun edgeEntries(edge: EdgeKey, callbacks: GraphCanvasCallbacks): List<Me
 
 private val PANEL_WIDTH = 260.dp
 
+/** What the one action on a derived edge reads. The user's own words. */
+internal const val PROMOTE_LABEL = "Make this a real blocker in Linear"
+
 /**
  * What one PR-derived edge is, in place of the change-and-remove surface a Linear edge gets.
- * There is nothing to press: Linear holds no relation to change, and the fix, if the order is
- * wrong, is a new base on GitHub.
+ * Linear holds no relation to change, and the fix, if the order is wrong, is a new base on
+ * GitHub. The one thing to press writes the relation the pull requests imply into Linear.
  */
 @Composable
 internal fun DerivedEdgePanel(
@@ -304,9 +308,10 @@ internal fun DerivedEdgePanel(
     at: Offset,
     viewport: Size,
     density: Float,
+    onPromote: () -> Unit,
 ) {
     val x = at.x.coerceIn(0f, max(0f, viewport.width - PANEL_WIDTH.value * density))
-    val y = at.y.coerceIn(0f, max(0f, viewport.height - 96f * density))
+    val y = at.y.coerceIn(0f, max(0f, viewport.height - 140f * density))
     Column(
         modifier = Modifier
             .offset { IntOffset(x.roundToInt(), y.roundToInt()) }
@@ -332,6 +337,7 @@ internal fun DerivedEdgePanel(
                 lineHeight = 14.sp,
             )
         }
+        SwimButton(PROMOTE_LABEL, onPromote, Modifier.fillMaxWidth())
     }
 }
 

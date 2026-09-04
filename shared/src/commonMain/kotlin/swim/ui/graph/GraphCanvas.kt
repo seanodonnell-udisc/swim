@@ -367,6 +367,7 @@ fun GraphCanvas(
                     at = panel.at,
                     viewport = state.viewport,
                     density = density,
+                    onPromote = { promote(derived, state, callbacks) },
                 )
             }
         }
@@ -387,6 +388,7 @@ fun GraphCanvas(
                     at = menu.at,
                     viewport = state.viewport,
                     density = density,
+                    onPromote = { promote(derived, state, callbacks) },
                 )
             }
         }
@@ -851,8 +853,12 @@ internal fun hitEdge(
     return best
 }
 
-/** How far a PR-derived edge is held back from a Linear one. No dashes: the owner said so. */
-internal const val DERIVED_ALPHA = 0.55f
+/**
+ * The dash a PR-derived blocker draws with: 6 on, 4 off, a 3:2 stroke-to-space ratio at 100%
+ * zoom. A real Linear blocker stays solid, so the dash is the whole distinction, and the derived
+ * line keeps the full red rather than the alpha it used to be held back by.
+ */
+internal val DERIVED_DASH = floatArrayOf(6f, 4f)
 
 internal fun edgeColor(type: RelationType): Color = when (type) {
     RelationType.BLOCKS -> Swim.Red
@@ -860,8 +866,8 @@ internal fun edgeColor(type: RelationType): Color = when (type) {
     RelationType.DUPLICATE -> Swim.Purple
 }
 
-private fun edgeDashes(type: RelationType): FloatArray? = when (type) {
-    RelationType.BLOCKS -> null
+private fun edgeDashes(type: RelationType, derived: Boolean = false): FloatArray? = when (type) {
+    RelationType.BLOCKS -> if (derived) DERIVED_DASH else null
     RelationType.RELATED -> floatArrayOf(5f, 5f)
     RelationType.DUPLICATE -> floatArrayOf(3f, 3f)
 }
@@ -882,11 +888,11 @@ private fun DrawScope.drawEdges(
         val points = edgePoints(edge.type, from, to, routes[key])
         val arrivesAt = arrivalSide(points)
         val landsOn = points.last()
-        // A derived edge is the same solid red family, held back. It is a reading of the pull
-        // requests, not a relation somebody wrote down, and it must say so at a glance.
-        val base = edgeColor(edge.type).let {
-            if (edge.provenance == EdgeProvenance.PR_DERIVED) it.copy(alpha = DERIVED_ALPHA) else it
-        }
+        // A derived edge is the same red, the same anchors and the same arrowhead as a real
+        // blocker, and it dashes. It is a reading of the pull requests, not a relation somebody
+        // wrote down, and it must say so at a glance.
+        val derived = edge.provenance == EdgeProvenance.PR_DERIVED
+        val base = edgeColor(edge.type)
         // A hovered edge reads brighter and thicker, so a click on it feels aimable.
         val color = if (hover) lerp(base, Color.White, 0.45f) else base
         val width = (if (edge.type == RelationType.BLOCKS) 2f else 1f) + if (hover) 2f else 0f
@@ -895,7 +901,7 @@ private fun DrawScope.drawEdges(
             color = color,
             style = Stroke(
                 width = width,
-                pathEffect = edgeDashes(edge.type)?.let { PathEffect.dashPathEffect(it, 0f) },
+                pathEffect = edgeDashes(edge.type, derived)?.let { PathEffect.dashPathEffect(it, 0f) },
             ),
         )
         when (edge.type) {
@@ -959,6 +965,16 @@ private fun DrawScope.drawPickRing(source: Rect?, zoom: Float) {
             style = Stroke(2.5f * unit),
         )
     }
+}
+
+/**
+ * Writes the relation the pull requests imply into Linear. It is the same create the chooser
+ * runs, so it gets the same confirm dialog and the same reload; the pair then draws as the real
+ * blocker it has become, because a Linear relation suppresses the derived edge.
+ */
+internal fun promote(edge: EdgeKey, state: GraphCanvasState, callbacks: GraphCanvasCallbacks) {
+    state.dismissPanels()
+    callbacks.onCreateRelation(edge.from, edge.to, RelationType.BLOCKS, false)
 }
 
 @Composable

@@ -434,4 +434,27 @@ class GraphCanvasLogicTest {
         assertTrue(zoomFactor(40f) > 0.5f, "one event zoomed out too far: ${zoomFactor(40f)}")
         assertTrue(zoomFactor(-40f) < 2f, "one event zoomed in too far: ${zoomFactor(-40f)}")
     }
+
+    @Test
+    fun promotingADerivedEdgeAsksLinearForTheSameBlocksRelationAndClosesThePanel() {
+        val canvas = state()
+        val edge = EdgeKey("ENG-1", "ENG-2", RelationType.BLOCKS)
+        canvas.panel = CanvasPanel.Edit(edge, Offset.Zero)
+        var created: String? = null
+
+        promote(
+            edge,
+            canvas,
+            GraphCanvasCallbacks(
+                onCreateRelation = { from, to, type, reversed ->
+                    created = "$from $to $type reversed=$reversed"
+                },
+            ),
+        )
+
+        // The same pair, the same direction, not reversed: the derived edge already reads
+        // "from blocks to", so the relation Linear gets must read the same way.
+        assertEquals("ENG-1 ENG-2 BLOCKS reversed=false", created)
+        assertNull(canvas.panel)
+    }
 }
