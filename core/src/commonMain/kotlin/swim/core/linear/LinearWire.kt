@@ -45,7 +45,12 @@ internal data class KeyWire(val key: String? = null)
 internal data class NameWire(val name: String? = null)
 
 @Serializable
-internal data class ProjectMilestoneWire(val id: String? = null, val name: String? = null)
+internal data class ProjectMilestoneWire(
+    val id: String? = null,
+    val name: String? = null,
+    val sortOrder: Float? = null,
+    val targetDate: String? = null,
+)
 
 // The id is what `setAssignee` needs. Without it the UI has to match the current user by
 // display name.
@@ -231,6 +236,8 @@ internal fun IssueWire.toIssueNode(): IssueNode = IssueNode(
     project = project?.name,
     milestoneId = projectMilestone?.id,
     milestone = projectMilestone?.name,
+    milestoneSortOrder = projectMilestone?.sortOrder,
+    milestoneTargetDate = projectMilestone?.targetDate,
     labels = labels.nodes.mapNotNull { it.name },
     assignee = assignee?.name,
     assigneeId = assignee?.id,

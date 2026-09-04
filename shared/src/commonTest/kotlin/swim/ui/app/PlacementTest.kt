@@ -35,6 +35,7 @@ private fun node(
     project: String? = null,
     labels: List<String> = emptyList(),
     milestone: String? = null,
+    milestoneSortOrder: Float? = null,
 ) =
     IssueNode(
         id = id,
@@ -47,6 +48,7 @@ private fun node(
         project = project,
         labels = labels,
         milestone = milestone,
+        milestoneSortOrder = milestoneSortOrder,
     )
 
 private const val KEY = "team=ENG"
@@ -193,6 +195,33 @@ class PlacementTest {
     fun theNoMilestoneAreaComesLast() {
         val placed = placeGraph(milestoned, GraphGrouping.MILESTONE, KEY, PositionSnapshot())
         assertEquals(listOf("M1", "M2", "No milestone"), placed.groups.map { it.label })
+    }
+
+    @Test
+    fun areasFollowSortOrderNotName() {
+        val graph = GraphData(
+            nodes = listOf(
+                node("A", milestone = "Launch", milestoneSortOrder = 2f),
+                node("B", milestone = "Foundations", milestoneSortOrder = 0f),
+                node("C", milestone = "Service", milestoneSortOrder = 1f),
+            ),
+            edges = emptyList(),
+        )
+        val placed = placeGraph(graph, GraphGrouping.MILESTONE, KEY, PositionSnapshot())
+        assertEquals(listOf("Foundations", "Service", "Launch"), placed.groups.map { it.label })
+    }
+
+    @Test
+    fun aSortOrderTieFallsBackToName() {
+        val graph = GraphData(
+            nodes = listOf(
+                node("A", milestone = "Zebra", milestoneSortOrder = 0f),
+                node("B", milestone = "Alpha", milestoneSortOrder = 0f),
+            ),
+            edges = emptyList(),
+        )
+        val placed = placeGraph(graph, GraphGrouping.MILESTONE, KEY, PositionSnapshot())
+        assertEquals(listOf("Alpha", "Zebra"), placed.groups.map { it.label })
     }
 
     @Test

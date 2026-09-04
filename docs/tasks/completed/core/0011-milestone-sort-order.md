@@ -2,7 +2,7 @@
 id: 0011
 title: Fetch the milestone sort order
 area: core
-status: todo
+status: done
 priority: P3
 depends_on: []
 created: 2026-09-02

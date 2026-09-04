@@ -70,13 +70,14 @@ internal fun isReserved(key: String): Boolean =
 private val UNGROUPED = setOf("No project", "No label", "No milestone")
 
 /**
- * Areas run left to right by name, with the bucket for members that have none last.
- *
- * ponytail: by name, not by the order Linear keeps its milestones in. `M1`, `M2`, `M3` sort
- * right; a workspace that names them by theme will not. `IssueNode` carries the milestone name
- * and id only, so a true ordering needs a sort key from `swim.core`.
+ * Areas run left to right by order, with the bucket for members that have none last. A milestone
+ * area orders by the tracker's own `sortOrder`, ties and every other grouping by name.
  */
-private val GROUP_ORDER = compareBy<Map.Entry<String, *>>({ it.key in UNGROUPED }, { it.key })
+private fun groupOrder(graph: GraphData, groupBy: GraphGrouping): Comparator<Map.Entry<String, *>> {
+    if (groupBy != GraphGrouping.MILESTONE) return compareBy({ it.key in UNGROUPED }, { it.key })
+    val sortOrderOf = graph.nodes.mapNotNull { it.milestone?.let { name -> name to it.milestoneSortOrder } }.toMap()
+    return compareBy({ it.key in UNGROUPED }, { sortOrderOf[it.key] ?: Float.MAX_VALUE }, { it.key })
+}
 
 /** Room for the group name above the members, and a margin around them. */
 internal const val GROUP_LABEL_BAND: Float = 40f
@@ -240,7 +241,7 @@ private fun layoutGrouped(
     for (slot in nodes) {
         members.getOrPut(groupOf[slot.id] ?: continue) { mutableListOf() }.add(slot)
     }
-    val ordered = members.entries.sortedWith(GROUP_ORDER)
+    val ordered = members.entries.sortedWith(groupOrder(graph, groupBy))
 
     val positions = LinkedHashMap<String, Position>()
     val crossLinks = mutableListOf<LayoutEdge>()
@@ -291,7 +292,7 @@ internal fun groupBoxesOf(
         val position = positions[slot] ?: continue
         members.getOrPut(key) { mutableListOf() }.add(position to (spreads[slot] ?: 0f))
     }
-    return members.entries.sortedWith(GROUP_ORDER).map { (label, group) ->
+    return members.entries.sortedWith(groupOrder(graph, groupBy)).map { (label, group) ->
         val left = group.minOf { it.first.x } - GROUP_MARGIN
         val top = group.minOf { it.first.y } - GROUP_LABEL_BAND
         val right = group.maxOf { it.first.x + it.second } +

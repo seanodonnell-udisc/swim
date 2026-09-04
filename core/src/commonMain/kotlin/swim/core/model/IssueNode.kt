@@ -18,6 +18,8 @@ data class IssueNode(
     val project: String? = null,
     val milestoneId: String? = null,
     val milestone: String? = null,
+    val milestoneSortOrder: Float? = null,
+    val milestoneTargetDate: String? = null,
     val labels: List<String> = emptyList(),
     val assignee: String? = null,
     val assigneeId: String? = null,
