@@ -30,10 +30,14 @@ tasks.register<JavaExec>("shot") {
 }
 
 // `run` and `shot` both take -Pswim.dev.autoload and -Pswim.insecureStorage.
+// -Pswim.demoPrs sets the SWIM_DEMO_PRS environment variable, which turns demo mode on.
 tasks.withType<JavaExec>().configureEach {
     listOf("swim.dev.autoload", "swim.insecureStorage").forEach { key ->
         (project.findProperty(key) as String?)?.let { systemProperty(key, it) }
     }
+    val demoPrs = project.findProperty("swim.demoPrs") as String?
+        ?: System.getenv("SWIM_DEMO_PRS")
+    demoPrs?.let { environment("SWIM_DEMO_PRS", it) }
 }
 
 compose.desktop {
